@@ -4,9 +4,11 @@ use std::{
 };
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono_tz::America::New_York;
 use remind_me::{
     model::{NewReminder, Reminder},
     repository::{ReminderRepository, SqliteReminderRepository},
+    schedule::{DaySpec, ScheduleError, ScheduleExpression},
     scheduler::{Clock, NotificationError, ReminderNotifier, stable_notification_id},
     service::{ActionOutcome, ReminderService},
 };
@@ -116,6 +118,68 @@ fn relative_creation_rejects_non_positive_delays_without_persisting() {
         assert!(repository.list_active().unwrap().is_empty());
         assert_eq!(clock.reads(), 1);
     }
+}
+
+#[test]
+fn schedule_preview_uses_the_service_clock_without_persisting() {
+    let now = New_York
+        .with_ymd_and_hms(2026, 8, 15, 16, 42, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let (repository, clock, _, service) = create_service(now);
+    let schedule = ScheduleExpression::Date {
+        day: DaySpec::Tomorrow,
+        time: None,
+    };
+
+    let preview = service.preview_schedule(&schedule, &New_York).unwrap();
+
+    assert_eq!(
+        preview,
+        New_York
+            .with_ymd_and_hms(2026, 8, 16, 9, 0, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Utc)
+    );
+    assert_eq!(clock.reads(), 1);
+    assert!(repository.list_active().unwrap().is_empty());
+}
+
+#[test]
+fn scheduled_creation_captures_now_once_then_refreshes_the_scheduler() {
+    let now = at(1_800_000_000);
+    let (repository, clock, _, service) = create_service(now);
+    let schedule = ScheduleExpression::Relative(Duration::hours(24));
+
+    let created = service
+        .create_scheduled("Call Ada", &schedule, &Utc)
+        .unwrap();
+
+    assert_eq!(created.due_at, now + Duration::hours(24));
+    assert_eq!(created.created_at, now);
+    assert_eq!(repository.get(created.id).unwrap(), created);
+    assert_eq!(service.next_due().unwrap(), Some(now + Duration::hours(24)));
+    assert_eq!(clock.reads(), 2);
+}
+
+#[test]
+fn scheduled_creation_rejects_resolution_errors_without_persisting() {
+    let now = at(1_800_000_000);
+    let (repository, clock, _, service) = create_service(now);
+    let schedule = ScheduleExpression::Relative(Duration::zero());
+
+    let error = service
+        .create_scheduled("Call Ada", &schedule, &Utc)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        remind_me::service::ServiceError::InvalidSchedule(ScheduleError::DueTimeNotFuture)
+    ));
+    assert!(repository.list_active().unwrap().is_empty());
+    assert_eq!(clock.reads(), 1);
 }
 
 #[test]

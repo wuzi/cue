@@ -20,6 +20,7 @@ app_id = 'io.github.wuzi.RemindMe'
 custom_target(
   'remind-me-binary',
   output: 'remind-me',
+  build_always_stale: true,
   command: [
     shell,
     files('build-aux/cargo-build.sh'),

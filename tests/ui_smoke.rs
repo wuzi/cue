@@ -7,6 +7,7 @@ use remind_me::{
     model::Reminder,
     repository::{ReminderRepository, SqliteReminderRepository},
     resources,
+    schedule::{ScheduleParseStatus, parse_english},
     scheduler::{Clock, NotificationError, ReminderNotifier},
     service::ReminderService,
     ui,
@@ -43,9 +44,16 @@ fn gtk_smoke_covers_layout_adaptation_and_input_preservation() {
     let widgets = ui::build_window(&application).unwrap();
 
     assert_eq!(widgets.window.title().as_deref(), Some("Remind Me"));
-    assert_eq!(widgets.view_stack.pages().n_items(), 2);
-    assert_eq!(widgets.message_entry.title(), "Message");
-    assert_eq!(widgets.message_entry.max_length(), 280);
+    assert_eq!(
+        widgets.navigation_view.visible_page_tag().as_deref(),
+        Some("reminders")
+    );
+    assert_eq!(widgets.composer_input.wrap_mode(), gtk::WrapMode::WordChar);
+    assert!(!widgets.composer_input.accepts_tab());
+    assert_eq!(
+        widgets.composer_placeholder.label(),
+        "What should I remind you about?"
+    );
     assert_eq!(widgets.add_button.label(), None);
     assert_eq!(
         widgets.add_button.icon_name().as_deref(),
@@ -56,26 +64,40 @@ fn gtk_smoke_covers_layout_adaptation_and_input_preservation() {
         Some("Add reminder")
     );
     assert!(widgets.add_button.has_css_class("circular"));
-    assert_eq!(widgets.when_row.title(), "When");
-    assert_eq!(widgets.when_row.subtitle().as_deref(), Some("In 1 hour"));
+    assert_eq!(widgets.schedule_preview.label(), "In 1 hour");
     assert!(!widgets.composer_error.is_visible());
-    assert_eq!(widgets.window.default_width(), 640);
-    assert_eq!(widgets.window.default_height(), 620);
+    assert_eq!(
+        widgets.composer_error.accessible_role(),
+        gtk::AccessibleRole::Alert
+    );
+    assert_eq!(widgets.window.default_width(), 560);
+    assert_eq!(widgets.window.default_height(), 540);
     assert_eq!(
         widgets.reminders_content.visible_child_name().as_deref(),
         Some("empty")
     );
     assert!(!is_descendant_of(
-        widgets.message_entry.upcast_ref(),
+        widgets.composer_input.upcast_ref(),
         widgets.reminders_scroller.upcast_ref()
     ));
-    assert!(!widgets.bottom_switcher.reveals());
+    assert!(
+        find_label(
+            widgets.reminders_empty.upcast_ref(),
+            "Call Ada @tomorrow 9am"
+        )
+        .is_some()
+    );
+    assert!(
+        find_label(
+            widgets.reminders_empty.upcast_ref(),
+            "Take a break @in 30 minutes"
+        )
+        .is_some()
+    );
 
-    widgets.window.set_default_size(480, 650);
+    widgets.window.set_default_size(360, 500);
     widgets.window.present();
     drain_main_context();
-    assert!(!widgets.header_switcher.is_visible());
-    assert!(widgets.bottom_switcher.reveals());
     assert!(!widgets.reminders_scroller.is_mapped());
     widgets.window.close();
     drain_main_context();
@@ -91,69 +113,142 @@ fn gtk_smoke_covers_layout_adaptation_and_input_preservation() {
     window.present();
     drain_main_context();
 
+    let message = find_descendant::<gtk::TextView>(window.widget().upcast_ref()).unwrap();
+    let preview = find_label(window.widget().upcast_ref(), "In 1 hour").unwrap();
+    message
+        .buffer()
+        .set_text("First line\nSecond line @in 15 minutes");
+    drain_main_context();
+    assert_eq!(
+        buffer_text(&message.buffer()),
+        "First line Second line @in 15 minutes"
+    );
+    message.grab_focus();
+    message.buffer().set_text("Walk @");
+    drain_main_context();
+    let suggestions = find_css_class(window.widget().upcast_ref(), "suggestions")
+        .unwrap()
+        .downcast::<gtk::ListBox>()
+        .unwrap();
+    assert_eq!(suggestions.selected_row().unwrap().index(), 0);
+    assert!(message.has_focus());
     gtk::prelude::WidgetExt::activate_action(
         window.widget(),
-        "win.set-when",
-        Some(&"30m".to_variant()),
+        "win.use-suggestion",
+        Some(&"in 15 minutes".to_variant()),
     )
     .unwrap();
-    let message = find_descendant::<adw::EntryRow>(window.widget().upcast_ref()).unwrap();
-    let when = find_action_row(window.widget().upcast_ref(), "When").unwrap();
-    assert_eq!(when.subtitle().as_deref(), Some("In 30 minutes"));
-    message.set_text("Call Ada");
-    message.emit_by_name::<()>("entry-activated", &[]);
+    drain_main_context();
+    assert_eq!(buffer_text(&message.buffer()), "Walk @in 15 minutes");
+
+    message.buffer().set_text("Call Ada @in 30 minutes");
+    drain_main_context();
+    assert!(!preview.label().is_empty());
+    let schedule = message.buffer().iter_at_offset(10);
+    assert!(
+        schedule
+            .tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some("schedule"))
+    );
+    find_icon_button(window.widget().upcast_ref(), "list-add-symbolic")
+        .unwrap()
+        .emit_clicked();
     drain_main_context();
 
     let reminders = repository.list_active().unwrap();
     assert_eq!(reminders.len(), 1);
+    assert_eq!(reminders[0].message, "Call Ada");
     assert_eq!(reminders[0].due_at, now + Duration::minutes(30));
-    assert_eq!(message.text(), "");
-    assert_eq!(when.subtitle().as_deref(), Some("In 1 hour"));
+    assert_eq!(buffer_text(&message.buffer()), "");
+    assert_eq!(preview.label(), "In 1 hour");
     let content = find_descendant::<gtk::Stack>(window.widget().upcast_ref()).unwrap();
     assert_eq!(content.visible_child_name().as_deref(), Some("list"));
+    assert!(find_descendant::<adw::PreferencesGroup>(content.upcast_ref()).is_none());
+    let saved_row = find_action_row(window.widget().upcast_ref(), "Call Ada").unwrap();
+    let touch_menu = find_descendant::<gtk::MenuButton>(saved_row.upcast_ref()).unwrap();
+    assert!(
+        touch_menu
+            .menu_model()
+            .is_some_and(|menu| menu.n_items() >= 3)
+    );
+    let row_controls = find_css_class(saved_row.upcast_ref(), "row-controls").unwrap();
+    assert!(!row_controls.can_target());
+    saved_row.grab_focus();
+    drain_main_context();
+    assert!(row_controls.can_target());
+    message.grab_focus();
+    drain_main_context();
+    assert!(!row_controls.can_target());
 
-    gtk::prelude::WidgetExt::activate_action(
-        window.widget(),
-        "win.set-when",
-        Some(&"30m".to_variant()),
-    )
-    .unwrap();
-    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.custom-when", None).unwrap();
+    message.buffer().set_text("Call Ada @someday");
     drain_main_context();
-    let custom_dialog = window
-        .widget()
-        .dialogs()
-        .item(0)
-        .unwrap()
-        .downcast::<adw::Dialog>()
-        .unwrap();
-    assert_eq!(custom_dialog.title(), "Custom time");
-    find_button(custom_dialog.upcast_ref(), "Cancel")
-        .unwrap()
-        .emit_clicked();
-    drain_main_context();
-    assert_eq!(when.subtitle().as_deref(), Some("In 30 minutes"));
+    let add = find_icon_button(window.widget().upcast_ref(), "list-add-symbolic").unwrap();
+    assert!(!add.is_sensitive());
+    assert_eq!(buffer_text(&message.buffer()), "Call Ada @someday");
 
-    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.custom-when", None).unwrap();
+    message.buffer().set_text("Lunch @tomorrow noon");
     drain_main_context();
-    let custom_dialog = window
-        .widget()
-        .dialogs()
-        .item(0)
+    let preview_button = find_css_class(window.widget().upcast_ref(), "schedule-preview")
         .unwrap()
-        .downcast::<adw::Dialog>()
+        .downcast::<gtk::Button>()
         .unwrap();
-    let calendar = find_descendant::<gtk::Calendar>(custom_dialog.upcast_ref()).unwrap();
-    calendar.set_date(&glib::DateTime::from_unix_local(1).unwrap());
-    find_button(custom_dialog.upcast_ref(), "Select")
+    preview_button.emit_clicked();
+    drain_main_context();
+    let custom = find_calendar_popover(window.widget().upcast_ref()).unwrap();
+    let before_custom = buffer_text(&message.buffer());
+    find_descendant::<gtk::Calendar>(custom.upcast_ref())
+        .unwrap()
+        .set_date(&glib::DateTime::from_unix_local(1).unwrap());
+    find_button(custom.upcast_ref(), "Apply")
         .unwrap()
         .emit_clicked();
     drain_main_context();
-    assert_eq!(window.widget().dialogs().n_items(), 1);
-    assert_eq!(when.subtitle().as_deref(), Some("In 30 minutes"));
-    find_button(custom_dialog.upcast_ref(), "Cancel")
+    assert!(custom.parent().is_some());
+    assert!(
+        find_label(custom.upcast_ref(), "Choose a time in the future")
+            .is_some_and(|label| label.is_visible())
+    );
+    assert_eq!(buffer_text(&message.buffer()), before_custom);
+    find_button(custom.upcast_ref(), "Cancel")
         .unwrap()
         .emit_clicked();
+    drain_main_context();
+
+    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-history", None).unwrap();
+    drain_main_context();
+    let navigation = find_descendant::<adw::NavigationView>(window.widget().upcast_ref()).unwrap();
+    assert_eq!(navigation.visible_page_tag().as_deref(), Some("history"));
+    assert!(navigation.pop());
+    drain_main_context();
+    assert_eq!(navigation.visible_page_tag().as_deref(), Some("reminders"));
+
+    let custom_window = ui::MainWindow::new(&application, service.clone(), || {}, || {}).unwrap();
+    custom_window.present();
+    drain_main_context();
+    let custom_input =
+        find_descendant::<gtk::TextView>(custom_window.widget().upcast_ref()).unwrap();
+    custom_input.buffer().set_text("Plan @tomorrow noon");
+    drain_main_context();
+    find_css_class(custom_window.widget().upcast_ref(), "schedule-preview")
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    drain_main_context();
+    let custom = find_calendar_popover(custom_window.widget().upcast_ref()).unwrap();
+    find_button(custom.upcast_ref(), "Apply")
+        .unwrap()
+        .emit_clicked();
+    drain_main_context();
+    let applied = buffer_text(&custom_input.buffer());
+    assert!(applied.starts_with("Plan @"));
+    assert!(!applied.contains("tomorrow"));
+    assert!(matches!(
+        parse_english(&applied).status,
+        ScheduleParseStatus::Valid(_)
+    ));
+    custom_window.widget().close();
     drain_main_context();
 
     gtk::prelude::WidgetExt::activate_action(
@@ -192,6 +287,38 @@ fn is_descendant_of(widget: &gtk::Widget, ancestor: &gtk::Widget) -> bool {
     false
 }
 
+fn find_label(root: &gtk::Widget, label: &str) -> Option<gtk::Label> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Ok(found) = widget.clone().downcast::<gtk::Label>()
+            && found.label() == label
+        {
+            return Some(found);
+        }
+        if let Some(found) = find_label(&widget, label) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn find_icon_button(root: &gtk::Widget, icon_name: &str) -> Option<gtk::Button> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Ok(button) = widget.clone().downcast::<gtk::Button>()
+            && button.icon_name().as_deref() == Some(icon_name)
+        {
+            return Some(button);
+        }
+        if let Some(found) = find_icon_button(&widget, icon_name) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 fn find_action_row(root: &gtk::Widget, title: &str) -> Option<adw::ActionRow> {
     let mut child = root.first_child();
     while let Some(widget) = child {
@@ -201,6 +328,40 @@ fn find_action_row(root: &gtk::Widget, title: &str) -> Option<adw::ActionRow> {
             return Some(row);
         }
         if let Some(found) = find_action_row(&widget, title) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn find_css_class(root: &gtk::Widget, css_class: &str) -> Option<gtk::Widget> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if widget.has_css_class(css_class) {
+            return Some(widget);
+        }
+        if let Some(found) = find_css_class(&widget, css_class) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn buffer_text(buffer: &gtk::TextBuffer) -> glib::GString {
+    buffer.text(&buffer.start_iter(), &buffer.end_iter(), false)
+}
+
+fn find_calendar_popover(root: &gtk::Widget) -> Option<gtk::Popover> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Ok(popover) = widget.clone().downcast::<gtk::Popover>()
+            && find_descendant::<gtk::Calendar>(popover.upcast_ref()).is_some()
+        {
+            return Some(popover);
+        }
+        if let Some(found) = find_calendar_popover(&widget) {
             return Some(found);
         }
         child = widget.next_sibling();

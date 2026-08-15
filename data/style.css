@@ -1,3 +1,33 @@
-.reminder-group-title {
-  margin: 0 6px 6px 6px;
+textview.composer-input,
+textview.composer-input text {
+  background: transparent;
+}
+
+.schedule-preview {
+  min-height: 24px;
+  padding: 4px 10px;
+}
+
+.flat-reminder-list {
+  background: transparent;
+}
+
+.flat-reminder-list > row {
+  background: transparent;
+  border-radius: 9px;
+}
+
+.flat-reminder-list > row:hover,
+.flat-reminder-list > row:focus-within {
+  background: alpha(currentColor, 0.06);
+}
+
+.row-controls {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.reminder-row:hover .row-controls,
+.reminder-row:focus-within .row-controls {
+  opacity: 1;
 }

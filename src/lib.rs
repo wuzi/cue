@@ -4,6 +4,7 @@ pub mod model;
 pub mod notifications;
 pub mod repository;
 pub mod resources;
+pub mod schedule;
 pub mod scheduler;
 pub mod service;
 pub mod time_utils;

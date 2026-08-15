@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: remind-me\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-15 19:58+0000\n"
+"POT-Creation-Date: 2026-08-15 20:55+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -39,8 +39,8 @@ msgstr ""
 #: data/io.github.wuzi.RemindMe.metainfo.xml:9
 msgid ""
 "Remind Me is a focused reminder app for quick one-time notes. Write a "
-"message, choose a date and time, and receive an actionable desktop "
-"notification when it is due."
+"sentence with an optional English schedule such as “@tomorrow 9am”, and "
+"receive an actionable desktop notification when it is due."
 msgstr ""
 
 #: data/io.github.wuzi.RemindMe.metainfo.xml:14
@@ -63,143 +63,145 @@ msgid "Main Menu"
 msgstr ""
 
 #: po/messages.c:5
-msgid "Reminders"
-msgstr ""
-
-#: po/messages.c:6
-msgid "Message"
-msgstr ""
-
-#: po/messages.c:7
-msgid "Add reminder"
-msgstr ""
-
-#: po/messages.c:8
-msgid "When"
-msgstr ""
-
-#: po/messages.c:9
-msgid "In 1 hour"
-msgstr ""
-
-#: po/messages.c:10
-msgid "No reminders yet"
-msgstr ""
-
-#: po/messages.c:11
-msgid "Create one above when something comes up."
-msgstr ""
-
-#: po/messages.c:12
-msgid "Reminder message"
-msgstr ""
-
-#: po/messages.c:13
-msgid "Today"
-msgstr ""
-
-#: po/messages.c:14
 msgid "History"
 msgstr ""
 
-#: po/messages.c:15
+#: po/messages.c:6
+msgid "Add reminder"
+msgstr ""
+
+#: po/messages.c:7
+msgid "Reminder sentence"
+msgstr ""
+
+#: po/messages.c:8
+msgid "What should I remind you about?"
+msgstr ""
+
+#: po/messages.c:9
+msgid ""
+"Write what to remember, followed by an optional schedule beginning with at "
+"sign"
+msgstr ""
+
+#: po/messages.c:10
+msgid "Choose a custom date and time"
+msgstr ""
+
+#: po/messages.c:11
+msgid "Reminder time"
+msgstr ""
+
+#: po/messages.c:12
+msgid "In 1 hour"
+msgstr ""
+
+#: po/messages.c:13
+msgid "Try something like"
+msgstr ""
+
+#: po/messages.c:14
 msgid "Clear History"
 msgstr ""
 
-#: po/messages.c:16
+#: po/messages.c:15
 msgid "No History"
 msgstr ""
 
-#: po/messages.c:17
+#: po/messages.c:16
 msgid "Completed reminders will appear here."
 msgstr ""
 
-#: po/messages.c:18
+#: po/messages.c:17
 msgid "The application did not finish starting."
 msgstr ""
 
-#: po/messages.c:19
+#: po/messages.c:18
 msgid "Create quick notes that remind you at the right time."
 msgstr ""
 
-#: po/messages.c:20
+#: po/messages.c:19
 msgid "Reminders are unavailable"
 msgstr ""
 
-#: po/messages.c:21
+#: po/messages.c:20
 msgid "Reminder"
 msgstr ""
 
-#: po/messages.c:22
+#: po/messages.c:21
 msgid "Done"
 msgstr ""
 
-#: po/messages.c:23
+#: po/messages.c:22
 msgid "Snooze 10 min"
 msgstr ""
 
-#: po/messages.c:24
+#: po/messages.c:23
 msgid "AM"
 msgstr ""
 
-#: po/messages.c:25
+#: po/messages.c:24
 msgid "PM"
 msgstr ""
 
-#: po/messages.c:26
+#: po/messages.c:25
 msgid "Quit with reminders pending?"
 msgstr ""
 
-#: po/messages.c:27
+#: po/messages.c:26
 msgid "Reminders cannot notify you after the application quits."
 msgstr ""
 
-#: po/messages.c:28
+#: po/messages.c:27
 msgid "Cancel"
 msgstr ""
 
-#: po/messages.c:29
+#: po/messages.c:28
 msgid "Quit"
 msgstr ""
 
-#: po/messages.c:30
+#: po/messages.c:29
 msgid "About Remind Me"
 msgstr ""
 
+#: po/messages.c:30
+msgid "Finish the schedule after @"
+msgstr ""
+
 #: po/messages.c:31
-msgid "In 15 minutes"
+msgid "Incomplete schedule"
 msgstr ""
 
 #: po/messages.c:32
-msgid "In 30 minutes"
+msgid "Invalid schedule"
 msgstr ""
 
 #: po/messages.c:33
-msgid "In 3 hours"
+msgid "I don't understand that schedule"
 msgstr ""
 
 #: po/messages.c:34
-msgid "In 1 day"
+msgid "Use a positive amount of time"
 msgstr ""
 
 #: po/messages.c:35
-msgid "Custom…"
+msgid "That schedule is too far away"
 msgstr ""
 
 #: po/messages.c:36
-msgid "Custom time"
+msgid "That schedule is out of range"
 msgstr ""
 
 #: po/messages.c:37
-msgid "Select"
+msgid "Custom…"
 msgstr ""
 
 #: po/messages.c:38
-msgid "Choose a valid local date and time"
+msgid "Custom time"
 msgstr ""
 
 #: po/messages.c:39
-msgid "Tomorrow"
+msgid "Apply"
 msgstr ""
 
 #: po/messages.c:40
@@ -239,61 +241,77 @@ msgid "Edit Reminder"
 msgstr ""
 
 #: po/messages.c:49
-msgid "Save"
+msgid "Reminder message"
 msgstr ""
 
 #: po/messages.c:50
-msgid "Choose a valid date"
+msgid "Save"
 msgstr ""
 
 #: po/messages.c:51
-msgid "Choose a valid time"
+msgid "Choose a valid date"
 msgstr ""
 
 #: po/messages.c:52
-msgid "Clear reminder history?"
+msgid "Choose a valid time"
 msgstr ""
 
 #: po/messages.c:53
-msgid "This cannot be undone."
+msgid "Choose a valid local date and time"
 msgstr ""
 
 #: po/messages.c:54
-msgid "Clear"
+msgid "Clear reminder history?"
 msgstr ""
 
 #: po/messages.c:55
-msgid "Edit"
+msgid "This cannot be undone."
 msgstr ""
 
 #: po/messages.c:56
-msgid "Delete"
+msgid "Clear"
 msgstr ""
 
 #: po/messages.c:57
-msgid "Due"
+msgid "Edit"
 msgstr ""
 
 #: po/messages.c:58
-msgid "Overdue"
+msgid "Delete"
 msgstr ""
 
 #: po/messages.c:59
-msgid "Later"
+msgid "Due"
 msgstr ""
 
 #: po/messages.c:60
-msgid "Enter a reminder message"
+msgid "Overdue"
 msgstr ""
 
 #: po/messages.c:61
-msgid "Reminder messages can contain at most 280 characters"
+msgid "Today"
 msgstr ""
 
 #: po/messages.c:62
-msgid "Choose a time in the future"
+msgid "Tomorrow"
 msgstr ""
 
 #: po/messages.c:63
+msgid "Later"
+msgstr ""
+
+#: po/messages.c:64
+msgid "Enter a reminder message"
+msgstr ""
+
+#: po/messages.c:65
+msgid "Reminder messages can contain at most 280 characters"
+msgstr ""
+
+#: po/messages.c:66
+msgid "Choose a time in the future"
+msgstr ""
+
+#: po/messages.c:67
 msgid "That local time does not exist because the clock changes then"
 msgstr ""

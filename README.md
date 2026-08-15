@@ -6,7 +6,9 @@ desktop notifications.
 
 ## Features
 
-- Quick reminders with a message, date, and time
+- One-line reminders such as `Call Ada @tomorrow 9am`
+- Offline English schedule parsing for relative times, weekdays, and dates
+- Local date/time preview for explicit schedules before creation
 - Done and ten-minute snooze actions in the app and notifications
 - Upcoming reminders grouped as Overdue, Today, Tomorrow, and Later
 - Local SQLite persistence and completed reminder history
@@ -41,3 +43,31 @@ Closing the window keeps the process alive while reminders are pending in the
 current login session. Delivery after logout, reboot, or forced termination is
 outside the first release; overdue reminders are delivered when the app next
 starts.
+
+## Reminder syntax
+
+Write the reminder first, then add an optional schedule after `@`. For example:
+
+```text
+Take a break @in 30 minutes
+Call Ada @tomorrow at 9am
+Submit the report @next Friday 14:30
+```
+
+Without a schedule, Remind Me uses one hour from submission. The schedule
+grammar is English-only in this release and is parsed entirely on your device.
+Use `@@` when you need a literal boundary-style `@` in the reminder text.
+
+Supported schedule forms are:
+
+- Relative: `in 15 minutes`, `in an hour`, `in 2 days`, `in 1 week`
+- Named days: `today`, `tomorrow`, weekdays, and `next Friday`
+- Times: `9am`, `9:30 PM`, `14:30`, `noon`, and `midnight`
+- Day parts: `morning`, `afternoon`, `evening`, and `tonight`
+- Dates: `Aug 20`, `August 20 2026`, and `2026-08-20`
+
+Named dates without a time use 09:00, except `today`, which uses the rounded
+one-hour default. A bare weekday chooses its next future occurrence; `next`
+chooses that weekday in the following calendar week. Time-only schedules and
+month/day dates roll forward to their next future occurrence. Explicit past
+dates and local times skipped by a daylight-saving clock change are rejected.

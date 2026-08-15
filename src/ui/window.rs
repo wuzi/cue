@@ -1,96 +1,47 @@
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 use adw::prelude::*;
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Timelike, Utc};
+use chrono::{Datelike, Duration, Local, NaiveDate, Timelike, Utc};
 use gio::prelude::ActionMapExt;
-use glib::variant::{FromVariant, StaticVariantType, ToVariant};
+use glib::variant::{FromVariant, StaticVariantType};
 use uuid::Uuid;
 
 use crate::{
     grouping::{ReminderGroup, group_active_reminders},
-    model::{NewReminder, Reminder, ReminderError},
+    model::{Reminder, ReminderError},
     repository::RepositoryError,
+    schedule::{
+        ScheduleError, ScheduleExpression, ScheduleParseError, ScheduleParseStatus, parse_english,
+    },
     service::{ReminderService, ServiceError},
     time_utils::{ClockFormat, default_due_time, format_clock_time, resolve_local_datetime},
 };
 
-use super::{UiBuildError, WindowWidgets, build_window};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RelativePreset {
-    Minutes15,
-    Minutes30,
-    Hour1,
-    Hours3,
-    Day1,
-}
-
-impl RelativePreset {
-    const DEFAULT: Self = Self::Hour1;
-    const ALL: [Self; 5] = [
-        Self::Minutes15,
-        Self::Minutes30,
-        Self::Hour1,
-        Self::Hours3,
-        Self::Day1,
-    ];
-
-    fn from_action_target(target: &str) -> Option<Self> {
-        match target {
-            "15m" => Some(Self::Minutes15),
-            "30m" => Some(Self::Minutes30),
-            "1h" => Some(Self::Hour1),
-            "3h" => Some(Self::Hours3),
-            "1d" => Some(Self::Day1),
-            _ => None,
-        }
-    }
-
-    fn action_target(self) -> &'static str {
-        match self {
-            Self::Minutes15 => "15m",
-            Self::Minutes30 => "30m",
-            Self::Hour1 => "1h",
-            Self::Hours3 => "3h",
-            Self::Day1 => "1d",
-        }
-    }
-
-    fn delay(self) -> Duration {
-        match self {
-            Self::Minutes15 => Duration::minutes(15),
-            Self::Minutes30 => Duration::minutes(30),
-            Self::Hour1 => Duration::hours(1),
-            Self::Hours3 => Duration::hours(3),
-            Self::Day1 => Duration::hours(24),
-        }
-    }
-
-    fn label(self) -> String {
-        match self {
-            Self::Minutes15 => gettextrs::gettext("In 15 minutes"),
-            Self::Minutes30 => gettextrs::gettext("In 30 minutes"),
-            Self::Hour1 => gettextrs::gettext("In 1 hour"),
-            Self::Hours3 => gettextrs::gettext("In 3 hours"),
-            Self::Day1 => gettextrs::gettext("In 1 day"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComposerWhen {
-    Relative(RelativePreset),
-    Absolute(DateTime<Utc>),
-}
+use super::{UiBuildError, WindowWidgets, build_window, composer::SmartComposer, rows};
 
 pub struct MainWindow {
     widgets: WindowWidgets,
+    composer: SmartComposer,
     service: Rc<ReminderService>,
-    composer_when: Cell<ComposerWhen>,
     reminder_to_focus: Cell<Option<Uuid>>,
+    suggestions: RefCell<Option<SuggestionMenu>>,
     on_mutation: Box<dyn Fn()>,
     on_closed: Box<dyn Fn()>,
 }
+
+struct SuggestionMenu {
+    popover: gtk::Popover,
+    list: gtk::ListBox,
+}
+
+const SUGGESTIONS: [Option<&str>; 6] = [
+    Some("in 15 minutes"),
+    Some("in 30 minutes"),
+    Some("in 1 hour"),
+    Some("tomorrow 9am"),
+    Some("next Monday 9am"),
+    None,
+];
 
 impl MainWindow {
     pub fn new(
@@ -100,24 +51,29 @@ impl MainWindow {
         on_closed: impl Fn() + 'static,
     ) -> Result<Rc<Self>, UiBuildError> {
         let widgets = build_window(application)?;
+        let composer = SmartComposer::new(&widgets);
         let window = Rc::new(Self {
             widgets,
+            composer,
             service,
-            composer_when: Cell::new(ComposerWhen::Relative(RelativePreset::DEFAULT)),
             reminder_to_focus: Cell::new(None),
+            suggestions: RefCell::new(None),
             on_mutation: Box::new(on_mutation),
             on_closed: Box::new(on_closed),
         });
         window.install_menu();
         window.install_window_actions();
         window.connect_signals();
-        window.update_when_label();
+        window.update_composer();
         window.refresh();
         Ok(window)
     }
 
     pub fn present(&self) {
         self.widgets.window.present();
+        if self.widgets.navigation_view.visible_page_tag().as_deref() == Some("reminders") {
+            self.widgets.composer_input.grab_focus();
+        }
     }
 
     pub fn widget(&self) -> &adw::ApplicationWindow {
@@ -130,7 +86,9 @@ impl MainWindow {
 
     pub fn show_reminder(&self, id: Uuid) {
         self.reminder_to_focus.set(Some(id));
-        self.widgets.view_stack.set_visible_child_name("reminders");
+        while self.widgets.navigation_view.visible_page_tag().as_deref() != Some("reminders")
+            && self.widgets.navigation_view.pop()
+        {}
         self.refresh();
         self.present();
     }
@@ -177,6 +135,10 @@ impl MainWindow {
 
     fn install_menu(&self) {
         let menu = gio::Menu::new();
+        menu.append(
+            Some(&gettextrs::gettext("History")),
+            Some("win.show-history"),
+        );
         menu.append(
             Some(&gettextrs::gettext("About Remind Me")),
             Some("app.about"),
@@ -246,32 +208,47 @@ impl MainWindow {
         });
         self.widgets.window.add_action(&delete);
 
-        let set_when = gio::SimpleAction::new("set-when", Some(&String::static_variant_type()));
+        let show_history = gio::SimpleAction::new("show-history", None);
         let weak = Rc::downgrade(self);
-        set_when.connect_activate(move |_, target| {
+        show_history.connect_activate(move |_, _| {
+            if let Some(window) = weak.upgrade()
+                && window.widgets.navigation_view.visible_page_tag().as_deref() != Some("history")
+            {
+                window.widgets.navigation_view.push_by_tag("history");
+            }
+        });
+        self.widgets.window.add_action(&show_history);
+
+        let submit = gio::SimpleAction::new("submit", None);
+        let weak = Rc::downgrade(self);
+        submit.connect_activate(move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.submit_composer();
+            }
+        });
+        self.widgets.window.add_action(&submit);
+
+        let suggestion =
+            gio::SimpleAction::new("use-suggestion", Some(&String::static_variant_type()));
+        let weak = Rc::downgrade(self);
+        suggestion.connect_activate(move |_, target| {
             let Some(window) = weak.upgrade() else {
                 return;
             };
-            let Some(target) = target.and_then(String::from_variant) else {
-                return;
-            };
-            let Some(preset) = RelativePreset::from_action_target(&target) else {
-                return;
-            };
-            window.composer_when.set(ComposerWhen::Relative(preset));
-            window.update_when_label();
-            window.clear_composer_error();
-        });
-        self.widgets.window.add_action(&set_when);
-
-        let custom_when = gio::SimpleAction::new("custom-when", None);
-        let weak = Rc::downgrade(self);
-        custom_when.connect_activate(move |_, _| {
-            if let Some(window) = weak.upgrade() {
-                window.show_custom_when_dialog();
+            if let Some(phrase) = target.and_then(String::from_variant) {
+                window.apply_suggestion(&phrase);
             }
         });
-        self.widgets.window.add_action(&custom_when);
+        self.widgets.window.add_action(&suggestion);
+
+        let custom = gio::SimpleAction::new("custom-time", None);
+        let weak = Rc::downgrade(self);
+        custom.connect_activate(move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.show_custom_when_popover();
+            }
+        });
+        self.widgets.window.add_action(&custom);
     }
 
     fn connect_signals(self: &Rc<Self>) {
@@ -283,25 +260,77 @@ impl MainWindow {
         });
 
         let weak = Rc::downgrade(self);
-        self.widgets.message_entry.connect_changed(move |_| {
-            if let Some(window) = weak.upgrade() {
-                window.clear_composer_error();
-            }
-        });
-
-        let weak = Rc::downgrade(self);
         self.widgets
-            .message_entry
-            .connect_entry_activated(move |_| {
+            .composer_input
+            .buffer()
+            .connect_changed(move |_| {
                 if let Some(window) = weak.upgrade() {
-                    window.submit_composer();
+                    window.update_composer();
                 }
             });
 
+        let keys = gtk::EventControllerKey::new();
         let weak = Rc::downgrade(self);
-        self.widgets.when_row.connect_activated(move |_| {
+        keys.connect_key_pressed(move |_, key, _, _| {
+            let Some(window) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            match key {
+                gtk::gdk::Key::Up if window.has_suggestions() => {
+                    window.move_suggestion(-1);
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::Down if window.has_suggestions() => {
+                    window.move_suggestion(1);
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::Escape if window.has_suggestions() => {
+                    window.dismiss_suggestions();
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
+                    if window.has_suggestions() {
+                        window.accept_selected_suggestion();
+                    } else {
+                        window.submit_composer();
+                    }
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        self.widgets.composer_input.add_controller(keys);
+
+        let schedule_click = gtk::GestureClick::new();
+        let weak = Rc::downgrade(self);
+        schedule_click.connect_released(move |_, _, x, y| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let Some(iter) = window
+                .widgets
+                .composer_input
+                .iter_at_location(x as i32, y as i32)
+            else {
+                return;
+            };
+            let input = window.composer.text();
+            let parsed = parse_english(&input);
+            let Some(span) = parsed.schedule_span else {
+                return;
+            };
+            let start = input[..span.start].chars().count() as i32;
+            let end = input[..span.end].chars().count() as i32;
+            if (start..=end).contains(&iter.offset()) {
+                window.show_custom_when_popover();
+            }
+        });
+        self.widgets.composer_input.add_controller(schedule_click);
+
+        let weak = Rc::downgrade(self);
+        self.widgets.preview_button.connect_clicked(move |_| {
             if let Some(window) = weak.upgrade() {
-                window.show_when_popover();
+                glib::idle_add_local_once(move || window.show_custom_when_popover());
             }
         });
 
@@ -322,97 +351,225 @@ impl MainWindow {
     }
 
     fn submit_composer(&self) {
-        self.clear_composer_error();
-        self.widgets.message_entry.remove_css_class("error");
-        let message = self.widgets.message_entry.text();
-        let result = match self.composer_when.get() {
-            ComposerWhen::Relative(preset) => self.service.create_relative(message, preset.delay()),
-            ComposerWhen::Absolute(due_at) => {
-                self.service.create(NewReminder::new(message, due_at))
+        let input = self.composer.text();
+        let parsed = parse_english(&input);
+        let schedule = match &parsed.status {
+            ScheduleParseStatus::Default => default_schedule(),
+            ScheduleParseStatus::Valid(schedule) => schedule.clone(),
+            ScheduleParseStatus::Partial => {
+                self.composer
+                    .set_error(Some(&gettextrs::gettext("Finish the schedule after @")));
+                return;
+            }
+            ScheduleParseStatus::Invalid(error) => {
+                self.composer
+                    .set_error(Some(&localized_schedule_parse_error(*error)));
+                return;
             }
         };
+        let result = self
+            .service
+            .create_scheduled(parsed.message, &schedule, &Local);
         match result {
             Ok(_) => {
-                self.widgets.message_entry.set_text("");
-                self.composer_when
-                    .set(ComposerWhen::Relative(RelativePreset::DEFAULT));
-                self.update_when_label();
+                self.composer.clear();
                 self.refresh();
                 (self.on_mutation)();
             }
             Err(ServiceError::InvalidReminder(error)) => {
-                if matches!(
-                    error,
-                    ReminderError::EmptyMessage | ReminderError::MessageTooLong
-                ) {
-                    self.widgets.message_entry.add_css_class("error");
-                }
-                self.show_composer_error(&localized_reminder_error(error));
+                self.composer
+                    .set_error(Some(&localized_reminder_error(error)));
             }
-            Err(error) => self.show_error(&error.to_string()),
+            Err(error) => self
+                .composer
+                .set_error(Some(&localized_service_error(&error))),
         }
     }
 
-    fn update_when_label(&self) {
-        let label = match self.composer_when.get() {
-            ComposerWhen::Relative(preset) => preset.label(),
-            ComposerWhen::Absolute(due_at) => format_local_datetime(due_at),
-        };
-        self.widgets.when_row.set_subtitle(&label);
+    fn update_composer(self: &Rc<Self>) {
+        let input = self.composer.text();
+        let parsed = parse_english(&input);
+        self.composer.update_placeholder();
+        self.composer
+            .update_span(&input, parsed.schedule_span.clone());
+        self.dismiss_suggestions();
+
+        if parsed.message.chars().count() > 280 {
+            self.composer.set_can_submit(false);
+            self.composer.set_error(Some(&gettextrs::gettext(
+                "Reminder messages can contain at most 280 characters",
+            )));
+            return;
+        }
+
+        match &parsed.status {
+            ScheduleParseStatus::Default => {
+                self.composer.set_preview(&gettextrs::gettext("In 1 hour"));
+                self.composer.set_error(None);
+                self.composer
+                    .set_can_submit(!parsed.message.trim().is_empty());
+            }
+            ScheduleParseStatus::Partial => {
+                self.composer
+                    .set_preview(&gettextrs::gettext("Incomplete schedule"));
+                self.composer
+                    .set_error(Some(&gettextrs::gettext("Finish the schedule after @")));
+                self.composer.set_can_submit(false);
+                self.show_suggestions();
+            }
+            ScheduleParseStatus::Invalid(error) => {
+                self.composer
+                    .set_preview(&gettextrs::gettext("Invalid schedule"));
+                self.composer
+                    .set_error(Some(&localized_schedule_parse_error(*error)));
+                self.composer.set_can_submit(false);
+            }
+            ScheduleParseStatus::Valid(schedule) => {
+                match self.service.preview_schedule(schedule, &Local) {
+                    Ok(due_at) => {
+                        self.composer.set_preview(&format_local_datetime(due_at));
+                        self.composer.set_error(None);
+                        self.composer
+                            .set_can_submit(!parsed.message.trim().is_empty());
+                    }
+                    Err(error) => {
+                        self.composer
+                            .set_preview(&gettextrs::gettext("Invalid schedule"));
+                        self.composer
+                            .set_error(Some(&localized_service_error(&error)));
+                        self.composer.set_can_submit(false);
+                    }
+                }
+            }
+        }
     }
 
-    fn show_when_popover(self: &Rc<Self>) {
-        let menu = gio::Menu::new();
-        for preset in RelativePreset::ALL {
-            let item = gio::MenuItem::new(Some(&preset.label()), None);
-            item.set_action_and_target_value(
-                Some("win.set-when"),
-                Some(&preset.action_target().to_variant()),
-            );
-            menu.append_item(&item);
+    fn show_suggestions(self: &Rc<Self>) {
+        if self.suggestions.borrow().is_some() {
+            return;
         }
-        let custom = gio::MenuItem::new(Some(&gettextrs::gettext("Custom…")), None);
-        custom.set_action_and_target_value(Some("win.custom-when"), None);
-        menu.append_item(&custom);
+        let popover = gtk::Popover::new();
+        popover.set_parent(&self.widgets.composer_card);
+        popover.set_autohide(false);
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        list.add_css_class("suggestions");
+        for choice in SUGGESTIONS {
+            let row = gtk::ListBoxRow::new();
+            row.set_focusable(false);
+            let text = choice
+                .map(str::to_owned)
+                .unwrap_or_else(|| gettextrs::gettext("Custom…"));
+            let label = gtk::Label::new(Some(&text));
+            label.set_halign(gtk::Align::Start);
+            label.set_margin_top(7);
+            label.set_margin_bottom(7);
+            label.set_margin_start(12);
+            label.set_margin_end(12);
+            row.set_child(Some(&label));
+            list.append(&row);
+        }
+        list.select_row(list.row_at_index(0).as_ref());
+        popover.set_child(Some(&list));
 
-        let popover = gtk::PopoverMenu::from_model(Some(&menu));
-        popover.set_parent(&self.widgets.when_row);
-        let popover_to_unparent = popover.clone();
-        popover.connect_closed(move |_| popover_to_unparent.unparent());
+        let weak = Rc::downgrade(self);
+        list.connect_row_activated(move |_, row| {
+            if let Some(window) = weak.upgrade() {
+                window.accept_suggestion(row.index() as usize);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        popover.connect_closed(move |popover| {
+            popover.unparent();
+            if let Some(window) = weak.upgrade() {
+                window.suggestions.borrow_mut().take();
+            }
+        });
         popover.popup();
+        *self.suggestions.borrow_mut() = Some(SuggestionMenu { popover, list });
+        self.widgets.composer_input.grab_focus();
     }
 
-    fn show_custom_when_dialog(self: &Rc<Self>) {
-        let local_due = match self.composer_when.get() {
-            ComposerWhen::Absolute(due_at) => due_at,
-            ComposerWhen::Relative(_) => default_due_time(Utc::now()),
+    fn dismiss_suggestions(&self) {
+        let menu = self.suggestions.borrow_mut().take();
+        if let Some(menu) = menu {
+            menu.popover.popdown();
         }
-        .with_timezone(&Local);
+    }
 
-        let dialog = adw::Dialog::builder()
-            .title(gettextrs::gettext("Custom time"))
-            .content_width(420)
-            .content_height(460)
-            .build();
-        let toolbar_view = adw::ToolbarView::new();
-        let header_bar = adw::HeaderBar::new();
+    fn has_suggestions(&self) -> bool {
+        self.suggestions.borrow().is_some()
+    }
+
+    fn move_suggestion(&self, offset: i32) {
+        let suggestions = self.suggestions.borrow();
+        let Some(menu) = suggestions.as_ref() else {
+            return;
+        };
+        let current = menu.list.selected_row().map_or(0, |row| row.index());
+        let last = SUGGESTIONS.len() as i32 - 1;
+        let next = (current + offset).clamp(0, last);
+        menu.list.select_row(menu.list.row_at_index(next).as_ref());
+    }
+
+    fn accept_selected_suggestion(self: &Rc<Self>) {
+        let selected = self
+            .suggestions
+            .borrow()
+            .as_ref()
+            .and_then(|menu| menu.list.selected_row())
+            .map_or(0, |row| row.index() as usize);
+        self.accept_suggestion(selected);
+    }
+
+    fn accept_suggestion(self: &Rc<Self>, index: usize) {
+        self.dismiss_suggestions();
+        match SUGGESTIONS.get(index).copied().flatten() {
+            Some(phrase) => self.apply_suggestion(phrase),
+            None => self.show_custom_when_popover(),
+        }
+    }
+
+    fn apply_suggestion(self: &Rc<Self>, phrase: &str) {
+        let input = self.composer.text();
+        let parsed = parse_english(&input);
+        let message_end = parsed
+            .schedule_span
+            .as_ref()
+            .map_or(input.len(), |span| span.start);
+        let message = input[..message_end].trim_end();
+        self.widgets
+            .composer_input
+            .buffer()
+            .set_text(&format!("{message} @{phrase}"));
+        self.widgets.composer_input.grab_focus();
+    }
+
+    fn show_custom_when_popover(self: &Rc<Self>) {
+        self.dismiss_suggestions();
+        let local_due = self
+            .service
+            .preview_schedule(&current_schedule(&self.composer.text()), &Local)
+            .or_else(|_| self.service.preview_schedule(&default_schedule(), &Local))
+            .unwrap_or_else(|_| default_due_time(Utc::now()))
+            .with_timezone(&Local);
+
+        let popover = gtk::Popover::new();
+        popover.set_parent(&self.widgets.preview_button);
+        popover.add_css_class("menu");
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.set_size_request(300, -1);
         let title = gtk::Label::new(Some(&gettextrs::gettext("Custom time")));
-        title.add_css_class("title");
-        header_bar.set_title_widget(Some(&title));
+        title.add_css_class("heading");
+        title.set_halign(gtk::Align::Start);
+        content.append(&title);
         let cancel = gtk::Button::with_label(&gettextrs::gettext("Cancel"));
-        let select = gtk::Button::with_label(&gettextrs::gettext("Select"));
+        let select = gtk::Button::with_label(&gettextrs::gettext("Apply"));
         select.add_css_class("suggested-action");
-        header_bar.pack_start(&cancel);
-        header_bar.pack_end(&select);
-        toolbar_view.add_top_bar(&header_bar);
-
-        let clamp = adw::Clamp::new();
-        clamp.set_maximum_size(420);
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        content.set_margin_top(16);
-        content.set_margin_bottom(16);
-        content.set_margin_start(16);
-        content.set_margin_end(16);
         let calendar = gtk::Calendar::new();
         if let Some(date) = glib_local_noon(local_due.date_naive()) {
             calendar.set_date(&date);
@@ -436,13 +593,15 @@ impl MainWindow {
         error_label.set_halign(gtk::Align::Start);
         error_label.set_wrap(true);
         error_label.add_css_class("error");
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        actions.set_halign(gtk::Align::End);
+        actions.append(&cancel);
+        actions.append(&select);
         content.append(&calendar);
         content.append(&controls);
         content.append(&error_label);
-        clamp.set_child(Some(&content));
-        toolbar_view.set_content(Some(&clamp));
-        dialog.set_child(Some(&toolbar_view));
-        dialog.set_default_widget(Some(&select));
+        content.append(&actions);
+        popover.set_child(Some(&content));
 
         let error_to_clear = error_label.clone();
         calendar.connect_day_selected(move |_| error_to_clear.set_visible(false));
@@ -451,13 +610,13 @@ impl MainWindow {
         let error_to_clear = error_label.clone();
         minute.connect_value_changed(move |_| error_to_clear.set_visible(false));
 
-        let dialog_to_cancel = dialog.clone();
+        let popover_to_cancel = popover.clone();
         cancel.connect_clicked(move |_| {
-            dialog_to_cancel.close();
+            popover_to_cancel.popdown();
         });
 
         let weak = Rc::downgrade(self);
-        let dialog_to_select = dialog.clone();
+        let popover_to_select = popover.clone();
         select.connect_clicked(move |_| {
             let Some(window) = weak.upgrade() else {
                 return;
@@ -471,32 +630,28 @@ impl MainWindow {
                 show_inline_error(&error_label, &gettextrs::gettext("Choose a valid date"));
                 return;
             };
-            let Some(local) =
-                date.and_hms_opt(hour.value_as_int() as u32, minute.value_as_int() as u32, 0)
-            else {
+            let Some(time) = chrono::NaiveTime::from_hms_opt(
+                hour.value_as_int() as u32,
+                minute.value_as_int() as u32,
+                0,
+            ) else {
                 show_inline_error(&error_label, &gettextrs::gettext("Choose a valid time"));
                 return;
             };
-            let Ok(due_at) = resolve_local_datetime(&Local, local) else {
-                show_inline_error(
-                    &error_label,
-                    &gettextrs::gettext("Choose a valid local date and time"),
-                );
-                return;
+            let schedule = ScheduleExpression::Date {
+                day: crate::schedule::DaySpec::Exact(date),
+                time: Some(time),
             };
-            if due_at <= Utc::now() {
-                show_inline_error(
-                    &error_label,
-                    &gettextrs::gettext("Choose a time in the future"),
-                );
+            if let Err(error) = window.service.preview_schedule(&schedule, &Local) {
+                show_inline_error(&error_label, &localized_service_error(&error));
                 return;
             }
-            window.composer_when.set(ComposerWhen::Absolute(due_at));
-            window.update_when_label();
-            window.clear_composer_error();
-            dialog_to_select.close();
+            window.apply_suggestion(&canonical_custom_phrase(date, time));
+            popover_to_select.popdown();
         });
-        dialog.present(Some(&self.widgets.window));
+        let popover_to_unparent = popover.clone();
+        popover.connect_closed(move |_| popover_to_unparent.unparent());
+        popover.popup();
     }
 
     fn rebuild_active(&self, reminders: Vec<Reminder>) {
@@ -512,55 +667,25 @@ impl MainWindow {
             if reminders.is_empty() {
                 continue;
             }
-            let group = adw::PreferencesGroup::new();
-            group.set_title(&localized_group_title(group_name));
+            let group = rows::FlatGroup::new(&localized_group_title(group_name));
             for reminder in reminders {
-                group.add(&self.active_row(reminder, group_name == ReminderGroup::Overdue));
+                let overdue = group_name == ReminderGroup::Overdue;
+                let row = rows::active_reminder_row(
+                    reminder,
+                    overdue,
+                    &format_due(reminder.due_at, overdue),
+                );
+                if self.reminder_to_focus.get() == Some(reminder.id) {
+                    self.reminder_to_focus.set(None);
+                    let row_to_focus = row.clone();
+                    glib::idle_add_local_once(move || {
+                        row_to_focus.grab_focus();
+                    });
+                }
+                group.rows.append(&row);
             }
-            self.widgets.active_groups.append(&group);
+            self.widgets.active_groups.append(&group.widget);
         }
-    }
-
-    fn active_row(&self, reminder: &Reminder, overdue: bool) -> adw::ActionRow {
-        let row = adw::ActionRow::new();
-        row.set_focusable(true);
-        row.set_title(&reminder.message);
-        row.set_subtitle(&format_due(reminder.due_at, overdue));
-
-        if self.reminder_to_focus.get() == Some(reminder.id) {
-            self.reminder_to_focus.set(None);
-            let row_to_focus = row.clone();
-            glib::idle_add_local_once(move || {
-                row_to_focus.grab_focus();
-            });
-        }
-
-        if overdue {
-            let snooze = gtk::Button::from_icon_name("alarm-symbolic");
-            snooze.add_css_class("flat");
-            snooze.set_valign(gtk::Align::Center);
-            snooze.set_tooltip_text(Some(&gettextrs::gettext("Snooze 10 minutes")));
-            snooze.set_action_name(Some("win.snooze"));
-            snooze.set_action_target_value(Some(&reminder.id.to_string().to_variant()));
-            row.add_suffix(&snooze);
-        }
-
-        let done = gtk::Button::from_icon_name("object-select-symbolic");
-        done.add_css_class("flat");
-        done.set_valign(gtk::Align::Center);
-        done.set_tooltip_text(Some(&gettextrs::gettext("Mark done")));
-        done.set_action_name(Some("win.complete"));
-        done.set_action_target_value(Some(&reminder.id.to_string().to_variant()));
-        row.add_suffix(&done);
-
-        let menu_button = gtk::MenuButton::new();
-        menu_button.set_icon_name("view-more-symbolic");
-        menu_button.add_css_class("flat");
-        menu_button.set_valign(gtk::Align::Center);
-        menu_button.set_tooltip_text(Some(&gettextrs::gettext("Reminder options")));
-        menu_button.set_menu_model(Some(&reminder_menu(reminder.id)));
-        row.add_suffix(&menu_button);
-        row
     }
 
     fn rebuild_history(&self, reminders: Vec<Reminder>) {
@@ -573,21 +698,20 @@ impl MainWindow {
             return;
         }
 
-        let group = adw::PreferencesGroup::new();
-        group.set_title(&gettextrs::gettext("Completed"));
+        let group = rows::FlatGroup::new(&gettextrs::gettext("Completed"));
         for reminder in reminders {
-            let row = adw::ActionRow::new();
-            row.set_title(&reminder.message);
-            if let Some(completed_at) = reminder.completed_at {
-                row.set_subtitle(&format!(
-                    "{} {}",
-                    gettextrs::gettext("Completed"),
-                    format_local_datetime(completed_at)
-                ));
-            }
-            group.add(&row);
+            let completed = reminder
+                .completed_at
+                .map_or_else(String::new, |completed_at| {
+                    format!(
+                        "{} {}",
+                        gettextrs::gettext("Completed"),
+                        format_local_datetime(completed_at)
+                    )
+                });
+            group.rows.append(&rows::history_row(&reminder, &completed));
         }
-        self.widgets.history_list.append(&group);
+        self.widgets.history_list.append(&group.widget);
     }
 
     fn complete(&self, id: Uuid) {
@@ -777,27 +901,6 @@ impl MainWindow {
             .toast_overlay
             .add_toast(adw::Toast::new(message));
     }
-
-    fn show_composer_error(&self, message: &str) {
-        self.widgets.composer_error.set_label(message);
-        self.widgets.composer_error.set_visible(true);
-    }
-
-    fn clear_composer_error(&self) {
-        self.widgets.composer_error.set_visible(false);
-    }
-}
-
-fn reminder_menu(id: Uuid) -> gio::Menu {
-    let menu = gio::Menu::new();
-    let target = id.to_string().to_variant();
-    let edit = gio::MenuItem::new(Some(&gettextrs::gettext("Edit")), None);
-    edit.set_action_and_target_value(Some("win.edit"), Some(&target));
-    menu.append_item(&edit);
-    let delete = gio::MenuItem::new(Some(&gettextrs::gettext("Delete")), None);
-    delete.set_action_and_target_value(Some("win.delete"), Some(&target));
-    menu.append_item(&delete);
-    menu
 }
 
 fn clear_box(container: &gtk::Box) {
@@ -849,8 +952,59 @@ fn localized_service_error(error: &ServiceError) -> String {
         | ServiceError::Repository(RepositoryError::InvalidReminder(error)) => {
             localized_reminder_error(*error)
         }
+        ServiceError::InvalidSchedule(error) => localized_schedule_error(*error),
         _ => error.to_string(),
     }
+}
+
+fn default_schedule() -> ScheduleExpression {
+    ScheduleExpression::Relative(Duration::hours(1))
+}
+
+fn current_schedule(input: &str) -> ScheduleExpression {
+    match parse_english(input).status {
+        ScheduleParseStatus::Valid(schedule) => schedule,
+        _ => default_schedule(),
+    }
+}
+
+fn localized_schedule_parse_error(error: ScheduleParseError) -> String {
+    match error {
+        ScheduleParseError::Unsupported => gettextrs::gettext("I don't understand that schedule"),
+        ScheduleParseError::InvalidAmount => gettextrs::gettext("Use a positive amount of time"),
+        ScheduleParseError::InvalidDate => gettextrs::gettext("Choose a valid date"),
+        ScheduleParseError::OutOfRange => gettextrs::gettext("That schedule is too far away"),
+    }
+}
+
+fn localized_schedule_error(error: ScheduleError) -> String {
+    match error {
+        ScheduleError::DueTimeNotFuture => gettextrs::gettext("Choose a time in the future"),
+        ScheduleError::NonexistentLocalTime => {
+            gettextrs::gettext("That local time does not exist because the clock changes then")
+        }
+        ScheduleError::InvalidDate => gettextrs::gettext("Choose a valid date"),
+        ScheduleError::OutOfRange => gettextrs::gettext("That schedule is out of range"),
+    }
+}
+
+fn canonical_custom_phrase(date: NaiveDate, time: chrono::NaiveTime) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let (twelve_hour, suffix) = match time.hour() {
+        0 => (12, "AM"),
+        1..=11 => (time.hour(), "AM"),
+        12 => (12, "PM"),
+        hour => (hour - 12, "PM"),
+    };
+    format!(
+        "{} {} {} {twelve_hour}:{:02} {suffix}",
+        MONTHS[date.month0() as usize],
+        date.day(),
+        date.year(),
+        time.minute()
+    )
 }
 
 fn localized_reminder_error(error: ReminderError) -> String {

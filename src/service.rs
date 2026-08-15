@@ -1,12 +1,13 @@
 use std::rc::Rc;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
     model::{NewReminder, Reminder, ReminderError},
     repository::{ReminderRepository, RepositoryError},
+    schedule::{ScheduleError, ScheduleExpression, resolve_schedule},
     scheduler::{
         Clock, RefreshResult, ReminderNotifier, Scheduler, SchedulerError, stable_notification_id,
     },
@@ -47,6 +48,27 @@ impl ReminderService {
     ) -> Result<Reminder, ServiceError> {
         let now = self.clock.now();
         let reminder = Reminder::create(NewReminder::new(message, now + delay), now)?;
+        self.persist_created(reminder)
+    }
+
+    pub fn preview_schedule<Tz: TimeZone>(
+        &self,
+        schedule: &ScheduleExpression,
+        timezone: &Tz,
+    ) -> Result<DateTime<Utc>, ServiceError> {
+        let now = self.clock.now();
+        Ok(resolve_schedule(schedule, now, timezone)?)
+    }
+
+    pub fn create_scheduled<Tz: TimeZone>(
+        &self,
+        message: impl Into<String>,
+        schedule: &ScheduleExpression,
+        timezone: &Tz,
+    ) -> Result<Reminder, ServiceError> {
+        let now = self.clock.now();
+        let due_at = resolve_schedule(schedule, now, timezone)?;
+        let reminder = Reminder::create(NewReminder::new(message, due_at), now)?;
         self.persist_created(reminder)
     }
 
@@ -187,6 +209,8 @@ pub enum ActionOutcome {
 pub enum ServiceError {
     #[error(transparent)]
     InvalidReminder(#[from] ReminderError),
+    #[error(transparent)]
+    InvalidSchedule(#[from] ScheduleError),
     #[error(transparent)]
     Repository(#[from] RepositoryError),
     #[error(transparent)]
