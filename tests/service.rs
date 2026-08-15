@@ -15,17 +15,32 @@ fn at(timestamp: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(timestamp, 0).single().unwrap()
 }
 
-struct FakeClock(Cell<DateTime<Utc>>);
+struct FakeClock {
+    now: Cell<DateTime<Utc>>,
+    reads: Cell<usize>,
+}
 
 impl FakeClock {
+    fn new(now: DateTime<Utc>) -> Self {
+        Self {
+            now: Cell::new(now),
+            reads: Cell::new(0),
+        }
+    }
+
     fn set(&self, now: DateTime<Utc>) {
-        self.0.set(now);
+        self.now.set(now);
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.get()
     }
 }
 
 impl Clock for FakeClock {
     fn now(&self) -> DateTime<Utc> {
-        self.0.get()
+        self.reads.set(self.reads.get() + 1);
+        self.now.get()
     }
 }
 
@@ -55,10 +70,52 @@ fn create_service(
     ReminderService,
 ) {
     let repository = Rc::new(SqliteReminderRepository::in_memory().unwrap());
-    let clock = Rc::new(FakeClock(Cell::new(now)));
+    let clock = Rc::new(FakeClock::new(now));
     let notifier = Rc::new(RecordingNotifier::default());
     let service = ReminderService::new(repository.clone(), clock.clone(), notifier.clone());
     (repository, clock, notifier, service)
+}
+
+#[test]
+fn relative_creation_uses_exact_preset_delays_and_refreshes_scheduling() {
+    let now = at(1_800_000_000);
+    for delay in [
+        Duration::minutes(15),
+        Duration::minutes(30),
+        Duration::hours(1),
+        Duration::hours(3),
+        Duration::hours(24),
+    ] {
+        let (repository, clock, _, service) = create_service(now);
+
+        let created = service.create_relative("Call Ada", delay).unwrap();
+
+        assert_eq!(created.due_at, now + delay);
+        assert_eq!(created.created_at, now);
+        assert_eq!(created.updated_at, now);
+        assert_eq!(repository.get(created.id).unwrap(), created);
+        assert_eq!(service.next_due().unwrap(), Some(now + delay));
+        assert_eq!(clock.reads(), 2);
+    }
+}
+
+#[test]
+fn relative_creation_rejects_non_positive_delays_without_persisting() {
+    let now = at(1_800_000_000);
+    for delay in [Duration::zero(), Duration::minutes(-1)] {
+        let (repository, clock, _, service) = create_service(now);
+
+        let error = service.create_relative("Call Ada", delay).unwrap_err();
+
+        assert!(matches!(
+            error,
+            remind_me::service::ServiceError::InvalidReminder(
+                remind_me::model::ReminderError::DueTimeNotFuture
+            )
+        ));
+        assert!(repository.list_active().unwrap().is_empty());
+        assert_eq!(clock.reads(), 1);
+    }
 }
 
 #[test]

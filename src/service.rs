@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -37,6 +37,20 @@ impl ReminderService {
 
     pub fn create(&self, input: NewReminder) -> Result<Reminder, ServiceError> {
         let reminder = Reminder::create(input, self.clock.now())?;
+        self.persist_created(reminder)
+    }
+
+    pub fn create_relative(
+        &self,
+        message: impl Into<String>,
+        delay: Duration,
+    ) -> Result<Reminder, ServiceError> {
+        let now = self.clock.now();
+        let reminder = Reminder::create(NewReminder::new(message, now + delay), now)?;
+        self.persist_created(reminder)
+    }
+
+    fn persist_created(&self, reminder: Reminder) -> Result<Reminder, ServiceError> {
         self.repository.insert(&reminder)?;
         self.scheduler.refresh()?;
         Ok(reminder)

@@ -3,8 +3,8 @@ using Adw 1;
 
 Adw.ApplicationWindow main_window {
   title: _("Remind Me");
-  default-width: 720;
-  default-height: 700;
+  default-width: 640;
+  default-height: 620;
   width-request: 360;
   height-request: 500;
 
@@ -31,79 +31,133 @@ Adw.ApplicationWindow main_window {
           title: _("Reminders");
           icon-name: "alarm-symbolic";
 
-          child: Gtk.ScrolledWindow {
-            hscrollbar-policy: never;
+          child: Gtk.Box {
+            orientation: vertical;
 
-            child: Adw.Clamp {
-              maximum-size: 720;
-              tightening-threshold: 560;
+            Adw.Clamp {
+              maximum-size: 600;
+              tightening-threshold: 550;
 
               child: Gtk.Box {
                 orientation: vertical;
-                spacing: 24;
-                margin-top: 24;
-                margin-bottom: 24;
-                margin-start: 18;
-                margin-end: 18;
+                spacing: 6;
+                margin-top: 16;
+                margin-bottom: 16;
+                margin-start: 12;
+                margin-end: 12;
 
-                Adw.PreferencesGroup composer_group {
-                  title: _("Quick Reminder");
-                  styles ["quick-composer"]
+                Gtk.ListBox composer_group {
+                  selection-mode: none;
+                  styles ["boxed-list"]
 
                   Adw.EntryRow message_entry {
-                    title: _("Reminder message");
+                    title: _("Message");
                     input-purpose: free_form;
                     max-length: 280;
                     show-apply-button: false;
-                  }
-
-                  Adw.ActionRow date_row {
-                    title: _("Date");
 
                     [suffix]
-                    Gtk.Button date_button {
+                    Gtk.Button add_button {
                       valign: center;
-                      label: _("Today");
+                      icon-name: "list-add-symbolic";
+                      tooltip-text: _("Add reminder");
+                      styles ["suggested-action", "circular"]
+
+                      accessibility {
+                        label: _("Add reminder");
+                      }
                     }
                   }
 
-                  Adw.ActionRow time_row {
-                    title: _("Time");
+                  Adw.ActionRow when_row {
+                    title: _("When");
+                    subtitle: _("In 1 hour");
+                    activatable: true;
+
+                    [prefix]
+                    Gtk.Image {
+                      icon-name: "alarm-symbolic";
+                      accessible-role: presentation;
+                    }
 
                     [suffix]
-                    Gtk.Button time_button {
-                      valign: center;
-                      label: _("Choose a time");
+                    Gtk.Image {
+                      icon-name: "pan-down-symbolic";
+                      accessible-role: presentation;
                     }
                   }
-
-                  Gtk.Button add_button {
-                    label: _("Add Reminder");
-                    halign: end;
-                    styles ["suggested-action", "pill"]
-                  }
-
-                  Gtk.Label composer_error {
-                    visible: false;
-                    halign: start;
-                    xalign: 0;
-                    wrap: true;
-                    styles ["error"]
-                  }
                 }
 
-                Gtk.Box active_groups {
-                  orientation: vertical;
-                  spacing: 20;
-                }
-
-                Adw.StatusPage reminders_empty {
-                  icon-name: "alarm-symbolic";
-                  title: _("No Reminders");
-                  description: _("Add a reminder above and it will appear here.");
+                Gtk.Label composer_error {
+                  visible: false;
+                  halign: start;
+                  xalign: 0;
+                  wrap: true;
+                  margin-start: 6;
+                  margin-end: 6;
+                  styles ["error"]
                 }
               };
-            };
+            }
+
+            Gtk.Stack reminders_content {
+              vexpand: true;
+              transition-type: crossfade;
+
+              Gtk.StackPage {
+                name: "empty";
+
+                child: Gtk.Box reminders_empty {
+                  orientation: vertical;
+                  spacing: 8;
+                  valign: center;
+                  halign: center;
+                  margin-start: 24;
+                  margin-end: 24;
+
+                  Gtk.Image {
+                    icon-name: "alarm-symbolic";
+                    pixel-size: 48;
+                    opacity: 0.55;
+                    accessible-role: presentation;
+                  }
+
+                  Gtk.Label {
+                    label: _("No reminders yet");
+                    styles ["title-3"]
+                  }
+
+                  Gtk.Label {
+                    label: _("Create one above when something comes up.");
+                    wrap: true;
+                    justify: center;
+                    styles ["dim-label"]
+                  }
+                };
+              }
+
+              Gtk.StackPage {
+                name: "list";
+
+                child: Gtk.ScrolledWindow reminders_scroller {
+                  hscrollbar-policy: never;
+
+                  child: Adw.Clamp {
+                    maximum-size: 600;
+                    tightening-threshold: 550;
+
+                    child: Gtk.Box active_groups {
+                      orientation: vertical;
+                      spacing: 16;
+                      margin-top: 16;
+                      margin-bottom: 16;
+                      margin-start: 12;
+                      margin-end: 12;
+                    };
+                  };
+                };
+              }
+            }
           };
         }
 
@@ -116,16 +170,16 @@ Adw.ApplicationWindow main_window {
             hscrollbar-policy: never;
 
             child: Adw.Clamp {
-              maximum-size: 720;
-              tightening-threshold: 560;
+              maximum-size: 600;
+              tightening-threshold: 550;
 
               child: Gtk.Box {
                 orientation: vertical;
-                spacing: 18;
-                margin-top: 24;
-                margin-bottom: 24;
-                margin-start: 18;
-                margin-end: 18;
+                spacing: 16;
+                margin-top: 16;
+                margin-bottom: 16;
+                margin-start: 12;
+                margin-end: 12;
 
                 Adw.Bin history_actions {
                   halign: end;
@@ -138,7 +192,7 @@ Adw.ApplicationWindow main_window {
 
                 Gtk.Box history_list {
                   orientation: vertical;
-                  spacing: 20;
+                  spacing: 16;
                 }
 
                 Adw.StatusPage history_empty {
