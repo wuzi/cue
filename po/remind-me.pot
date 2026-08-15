@@ -1,0 +1,275 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the remind-me package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: remind-me\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-15 18:12+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=CHARSET\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#. Translation catalog for Blueprint and Rust strings.
+#. * This file is used by xgettext and is not part of the application binary.
+#: data/io.github.wuzi.RemindMe.desktop:2
+#: data/io.github.wuzi.RemindMe.metainfo.xml:6 po/messages.c:3
+msgid "Remind Me"
+msgstr ""
+
+#: data/io.github.wuzi.RemindMe.desktop:3
+msgid "Create quick one-time reminders"
+msgstr ""
+
+#: data/io.github.wuzi.RemindMe.desktop:9
+msgid "Reminder;Alarm;Note;Notification;"
+msgstr ""
+
+#: data/io.github.wuzi.RemindMe.metainfo.xml:7
+msgid "Create quick reminders that notify you at the right time"
+msgstr ""
+
+#: data/io.github.wuzi.RemindMe.metainfo.xml:9
+msgid ""
+"Remind Me is a focused reminder app for quick one-time notes. Write a "
+"message, choose a date and time, and receive an actionable desktop "
+"notification when it is due."
+msgstr ""
+
+#: data/io.github.wuzi.RemindMe.metainfo.xml:14
+msgid ""
+"Reminders stay on your device. Complete or snooze them from the "
+"notification, review upcoming reminders by day, and keep a local history of "
+"completed items."
+msgstr ""
+
+#: data/io.github.wuzi.RemindMe.metainfo.xml:21
+msgid "wuzi"
+msgstr ""
+
+#: data/io.github.wuzi.RemindMe.metainfo.xml:36
+msgid "Initial release with local reminders, snoozing, and history."
+msgstr ""
+
+#: po/messages.c:4
+msgid "Main Menu"
+msgstr ""
+
+#: po/messages.c:5
+msgid "Reminders"
+msgstr ""
+
+#: po/messages.c:6
+msgid "Quick Reminder"
+msgstr ""
+
+#: po/messages.c:7
+msgid "Reminder message"
+msgstr ""
+
+#: po/messages.c:8
+msgid "Date"
+msgstr ""
+
+#: po/messages.c:9
+msgid "Today"
+msgstr ""
+
+#: po/messages.c:10
+msgid "Time"
+msgstr ""
+
+#: po/messages.c:11
+msgid "Choose a time"
+msgstr ""
+
+#: po/messages.c:12
+msgid "Add Reminder"
+msgstr ""
+
+#: po/messages.c:13
+msgid "No Reminders"
+msgstr ""
+
+#: po/messages.c:14
+msgid "Add a reminder above and it will appear here."
+msgstr ""
+
+#: po/messages.c:15
+msgid "History"
+msgstr ""
+
+#: po/messages.c:16
+msgid "Clear History"
+msgstr ""
+
+#: po/messages.c:17
+msgid "No History"
+msgstr ""
+
+#: po/messages.c:18
+msgid "Completed reminders will appear here."
+msgstr ""
+
+#: po/messages.c:19
+msgid "The application did not finish starting."
+msgstr ""
+
+#: po/messages.c:20
+msgid "Create quick notes that remind you at the right time."
+msgstr ""
+
+#: po/messages.c:21
+msgid "Reminders are unavailable"
+msgstr ""
+
+#: po/messages.c:22
+msgid "Reminder"
+msgstr ""
+
+#: po/messages.c:23
+msgid "Done"
+msgstr ""
+
+#: po/messages.c:24
+msgid "Snooze 10 min"
+msgstr ""
+
+#: po/messages.c:25
+msgid "AM"
+msgstr ""
+
+#: po/messages.c:26
+msgid "PM"
+msgstr ""
+
+#: po/messages.c:27
+msgid "Quit with reminders pending?"
+msgstr ""
+
+#: po/messages.c:28
+msgid "Reminders cannot notify you after the application quits."
+msgstr ""
+
+#: po/messages.c:29
+msgid "Cancel"
+msgstr ""
+
+#: po/messages.c:30
+msgid "Quit"
+msgstr ""
+
+#: po/messages.c:31
+msgid "About Remind Me"
+msgstr ""
+
+#: po/messages.c:32
+msgid "Choose a valid local date and time"
+msgstr ""
+
+#: po/messages.c:33
+msgid "Tomorrow"
+msgstr ""
+
+#: po/messages.c:34
+msgid "Hour"
+msgstr ""
+
+#: po/messages.c:35
+msgid "Minute"
+msgstr ""
+
+#: po/messages.c:36
+msgid "Snooze 10 minutes"
+msgstr ""
+
+#: po/messages.c:37
+msgid "Mark done"
+msgstr ""
+
+#: po/messages.c:38
+msgid "Reminder options"
+msgstr ""
+
+#: po/messages.c:39
+msgid "Completed"
+msgstr ""
+
+#: po/messages.c:40
+msgid "Reminder deleted"
+msgstr ""
+
+#: po/messages.c:41
+msgid "Undo"
+msgstr ""
+
+#: po/messages.c:42
+msgid "Edit Reminder"
+msgstr ""
+
+#: po/messages.c:43
+msgid "Save"
+msgstr ""
+
+#: po/messages.c:44
+msgid "Choose a valid date"
+msgstr ""
+
+#: po/messages.c:45
+msgid "Choose a valid time"
+msgstr ""
+
+#: po/messages.c:46
+msgid "Clear reminder history?"
+msgstr ""
+
+#: po/messages.c:47
+msgid "This cannot be undone."
+msgstr ""
+
+#: po/messages.c:48
+msgid "Clear"
+msgstr ""
+
+#: po/messages.c:49
+msgid "Edit"
+msgstr ""
+
+#: po/messages.c:50
+msgid "Delete"
+msgstr ""
+
+#: po/messages.c:51
+msgid "Due"
+msgstr ""
+
+#: po/messages.c:52
+msgid "Overdue"
+msgstr ""
+
+#: po/messages.c:53
+msgid "Later"
+msgstr ""
+
+#: po/messages.c:54
+msgid "Enter a reminder message"
+msgstr ""
+
+#: po/messages.c:55
+msgid "Reminder messages can contain at most 280 characters"
+msgstr ""
+
+#: po/messages.c:56
+msgid "Choose a time in the future"
+msgstr ""
+
+#: po/messages.c:57
+msgid "That local time does not exist because the clock changes then"
+msgstr ""

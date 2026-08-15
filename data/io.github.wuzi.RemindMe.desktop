@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Remind Me
+Comment=Create quick one-time reminders
+Exec=remind-me
+Icon=io.github.wuzi.RemindMe
+Terminal=false
+Type=Application
+Categories=Utility;GTK;
+Keywords=Reminder;Alarm;Note;Notification;
+DBusActivatable=true
+StartupNotify=true
+X-GNOME-UsesNotifications=true
+X-GNOME-Gettext-Domain=remind-me

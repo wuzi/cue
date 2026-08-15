@@ -1,0 +1,42 @@
+{
+  "app-id": "io.github.wuzi.RemindMe",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "remind-me",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri"
+  ],
+  "modules": [
+    {
+      "name": "remind-me",
+      "buildsystem": "meson",
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "build-args": [
+          "--share=network"
+        ]
+      },
+      "sources": [
+        {
+          "type": "dir",
+          "path": ".",
+          "skip": [
+            ".git",
+            ".flatpak-builder",
+            "build",
+            "flatpak-build",
+            "flatpak-repo",
+            "target"
+          ]
+        }
+      ]
+    }
+  ]
+}

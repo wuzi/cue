@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.wuzi.RemindMe</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Remind Me</name>
+  <summary>Create quick reminders that notify you at the right time</summary>
+  <description>
+    <p>
+      Remind Me is a focused reminder app for quick one-time notes. Write a
+      message, choose a date and time, and receive an actionable desktop
+      notification when it is due.
+    </p>
+    <p>
+      Reminders stay on your device. Complete or snooze them from the
+      notification, review upcoming reminders by day, and keep a local history
+      of completed items.
+    </p>
+  </description>
+  <developer id="io.github.wuzi">
+    <name>wuzi</name>
+  </developer>
+  <url type="homepage">https://github.com/wuzi/remind-me</url>
+  <url type="bugtracker">https://github.com/wuzi/remind-me/issues</url>
+  <launchable type="desktop-id">io.github.wuzi.RemindMe.desktop</launchable>
+  <provides>
+    <binary>remind-me</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-08-15">
+      <description>
+        <p>Initial release with local reminders, snoozing, and history.</p>
+      </description>
+    </release>
+  </releases>
+</component>
