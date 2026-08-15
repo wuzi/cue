@@ -41,10 +41,12 @@ install_data(
   'data' / app_id + '.metainfo.xml',
   install_dir: datadir / 'metainfo',
 )
-install_data(
-  'data/icons/hicolor/scalable/apps' / app_id + '.svg',
-  install_dir: datadir / 'icons/hicolor/scalable/apps',
-)
+foreach icon_size : ['128x128', '256x256', '512x512']
+  install_data(
+    'data/icons/hicolor' / icon_size / 'apps' / app_id + '.png',
+    install_dir: datadir / 'icons/hicolor' / icon_size / 'apps',
+  )
+endforeach
 install_data(
   'data/icons/hicolor/symbolic/apps' / app_id + '-symbolic.svg',
   install_dir: datadir / 'icons/hicolor/symbolic/apps',
