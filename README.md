@@ -1,16 +1,17 @@
 # Remind Me
 
-Remind Me is a small, local-only reminder app for the Linux desktop. It uses
-Rust, GTK4, and libadwaita to provide quick one-time reminders with actionable
-desktop notifications.
+Remind Me is a small, local-only scratchpad for the Linux desktop. Write notes
+directly on its canvas, and turn any note into a one-time reminder by adding an
+English `@schedule`.
 
 ## Features
 
-- One-line reminders such as `Call Ada @tomorrow 9am`
+- A seamless, persistent note canvas with no separate input form
+- Inline reminders such as `Call Ada @tomorrow 9am`
 - Offline English schedule parsing for relative times, weekdays, and dates
-- Local date/time preview for explicit schedules before creation
+- Clickable, normalized schedule suffixes and an exact date/time picker
 - Done and ten-minute snooze actions in the app and notifications
-- Upcoming reminders grouped as Overdue, Today, Tomorrow, and Later
+- Secondary Active Reminders and History pages
 - Local SQLite persistence and completed reminder history
 - Adaptive GNOME interface with system light, dark, and accent styles
 - No accounts, analytics, network access, or broad filesystem permissions
@@ -46,7 +47,7 @@ starts.
 
 ## Reminder syntax
 
-Write the reminder first, then add an optional schedule after `@`. For example:
+Write a note, then add an optional schedule after `@` to make it a reminder:
 
 ```text
 Take a break @in 30 minutes
@@ -54,9 +55,9 @@ Call Ada @tomorrow at 9am
 Submit the report @next Friday 14:30
 ```
 
-Without a schedule, Remind Me uses one hour from submission. The schedule
-grammar is English-only in this release and is parsed entirely on your device.
-Use `@@` when you need a literal boundary-style `@` in the reminder text.
+Without a schedule, the entry remains a local note. The schedule grammar is
+English-only in this release and is parsed entirely on your device. Use `@@`
+when you need a literal boundary-style `@` in the note text.
 
 Supported schedule forms are:
 

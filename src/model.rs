@@ -2,6 +2,8 @@ use chrono::{DateTime, Duration, Utc};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::schedule::ScheduleExpression;
+
 pub const MAX_MESSAGE_CHARS: usize = 280;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +30,55 @@ pub struct Reminder {
     pub updated_at: DateTime<Utc>,
     pub notified_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasEntry {
+    pub id: Uuid,
+    pub position: i64,
+    pub message: String,
+    pub reminder_id: Option<Uuid>,
+    pub working_text: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl CanvasEntry {
+    pub fn create(
+        message: impl Into<String>,
+        reminder_id: Option<Uuid>,
+        position: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Self, ReminderError> {
+        Ok(Self {
+            id: Uuid::new_v4(),
+            position,
+            message: validate_message(&message.into())?,
+            reminder_id,
+            working_text: None,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasItem {
+    pub entry: CanvasEntry,
+    pub reminder: Option<Reminder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CanvasSchedule {
+    None,
+    KeepExisting,
+    Replace(ScheduleExpression),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedCanvasItem {
+    pub entry: CanvasEntry,
+    pub reminder: Option<Reminder>,
 }
 
 impl Reminder {
@@ -71,6 +122,12 @@ impl Reminder {
         self.updated_at = now;
         self.notified_at = None;
         self.completed_at = None;
+        Ok(())
+    }
+
+    pub fn rename(&mut self, message: &str, now: DateTime<Utc>) -> Result<(), ReminderError> {
+        self.message = validate_message(message)?;
+        self.updated_at = now;
         Ok(())
     }
 

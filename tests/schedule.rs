@@ -255,6 +255,22 @@ fn schedule_suffix_does_not_reduce_the_available_message_length() {
 }
 
 #[test]
+fn multiline_canvas_messages_keep_literal_markers_and_parse_the_final_schedule() {
+    let parsed = parse_english("First line\nEmail ada@example.com and write @@home @tomorrow 9am");
+
+    assert_eq!(
+        parsed.message,
+        "First line\nEmail ada@example.com and write @home"
+    );
+    assert!(matches!(parsed.status, ScheduleParseStatus::Valid(_)));
+    assert_eq!(
+        &"First line\nEmail ada@example.com and write @@home @tomorrow 9am"
+            [parsed.schedule_span.unwrap()],
+        "@tomorrow 9am"
+    );
+}
+
+#[test]
 fn resolver_applies_relative_defaults_and_calendar_rollover_rules() {
     let now = New_York
         .with_ymd_and_hms(2026, 8, 15, 16, 42, 0)

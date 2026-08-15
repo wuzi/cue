@@ -1,11 +1,32 @@
-textview.composer-input,
-textview.composer-input text {
+textview.canvas-entry,
+textview.canvas-entry text,
+textview.canvas-draft,
+textview.canvas-draft text {
   background: transparent;
 }
 
-.schedule-preview {
-  min-height: 24px;
-  padding: 4px 10px;
+.canvas-entry-container {
+  padding: 0;
+}
+
+.canvas-entry-row {
+  border-radius: 9px;
+  transition: background 150ms ease;
+}
+
+.canvas-saved-row:hover,
+.canvas-saved-row:focus-within {
+  background: alpha(currentColor, 0.045);
+}
+
+.canvas-entry-controls {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.canvas-entry-row:hover .canvas-entry-controls,
+.canvas-entry-row:focus-within .canvas-entry-controls {
+  opacity: 1;
 }
 
 .flat-reminder-list {

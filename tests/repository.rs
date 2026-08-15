@@ -14,10 +14,10 @@ fn reminder(message: &str, due_at: DateTime<Utc>, now: DateTime<Utc>) -> Reminde
 }
 
 #[test]
-fn opening_repository_applies_schema_version_one() {
+fn opening_repository_applies_schema_version_two() {
     let repository = SqliteReminderRepository::in_memory().unwrap();
 
-    assert_eq!(repository.schema_version().unwrap(), 1);
+    assert_eq!(repository.schema_version().unwrap(), 2);
 }
 
 #[test]
@@ -26,13 +26,13 @@ fn opening_a_newer_schema_returns_a_typed_error() {
     let path = directory.path().join("newer.db");
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
-        .execute_batch("PRAGMA user_version = 2;")
+        .execute_batch("PRAGMA user_version = 3;")
         .unwrap();
     drop(connection);
 
     assert!(matches!(
         SqliteReminderRepository::open(path),
-        Err(RepositoryError::UnsupportedSchema(2))
+        Err(RepositoryError::UnsupportedSchema(3))
     ));
 }
 

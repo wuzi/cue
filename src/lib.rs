@@ -1,4 +1,5 @@
 pub mod app;
+pub mod canvas;
 pub mod grouping;
 pub mod model;
 pub mod notifications;

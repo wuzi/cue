@@ -1,37 +1,44 @@
-use std::{cell::Cell, cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+    time::Duration as StdDuration,
+};
 
 use adw::prelude::*;
-use chrono::{Datelike, Duration, Local, NaiveDate, Timelike, Utc};
+use chrono::{Datelike, Local, NaiveDate, Timelike, Utc};
 use gio::prelude::ActionMapExt;
 use glib::variant::{FromVariant, StaticVariantType};
 use uuid::Uuid;
 
 use crate::{
+    canvas::{
+        escape_message, format_schedule_suffix, normalize_registered_suffix,
+        normalize_stored_working_suffix,
+    },
     grouping::{ReminderGroup, group_active_reminders},
-    model::{Reminder, ReminderError},
+    model::{CanvasItem, CanvasSchedule, DeletedCanvasItem, Reminder, ReminderError},
     repository::RepositoryError,
     schedule::{
-        ScheduleError, ScheduleExpression, ScheduleParseError, ScheduleParseStatus, parse_english,
+        DaySpec, ScheduleError, ScheduleExpression, ScheduleParseError, ScheduleParseStatus,
+        parse_english,
     },
     service::{ReminderService, ServiceError},
     time_utils::{ClockFormat, default_due_time, format_clock_time, resolve_local_datetime},
 };
 
-use super::{UiBuildError, WindowWidgets, build_window, composer::SmartComposer, rows};
+use super::{UiBuildError, WindowWidgets, build_window, canvas::CanvasEditor, rows};
 
-pub struct MainWindow {
-    widgets: WindowWidgets,
-    composer: SmartComposer,
-    service: Rc<ReminderService>,
-    reminder_to_focus: Cell<Option<Uuid>>,
-    suggestions: RefCell<Option<SuggestionMenu>>,
-    on_mutation: Box<dyn Fn()>,
-    on_closed: Box<dyn Fn()>,
+struct CanvasSlot {
+    editor: Rc<CanvasEditor>,
+    item: Option<CanvasItem>,
+    committed_text: String,
 }
 
 struct SuggestionMenu {
     popover: gtk::Popover,
     list: gtk::ListBox,
+    target: Option<Uuid>,
 }
 
 const SUGGESTIONS: [Option<&str>; 6] = [
@@ -43,6 +50,19 @@ const SUGGESTIONS: [Option<&str>; 6] = [
     None,
 ];
 
+pub struct MainWindow {
+    widgets: WindowWidgets,
+    service: Rc<ReminderService>,
+    slots: RefCell<Vec<CanvasSlot>>,
+    autosaves: RefCell<HashMap<String, glib::SourceId>>,
+    reminder_to_focus: Cell<Option<Uuid>>,
+    suggestions: RefCell<Option<SuggestionMenu>>,
+    custom_popover: RefCell<Option<gtk::Popover>>,
+    style_signal_ids: RefCell<Vec<glib::SignalHandlerId>>,
+    on_mutation: Box<dyn Fn()>,
+    on_closed: Box<dyn Fn()>,
+}
+
 impl MainWindow {
     pub fn new(
         application: &adw::Application,
@@ -50,29 +70,30 @@ impl MainWindow {
         on_mutation: impl Fn() + 'static,
         on_closed: impl Fn() + 'static,
     ) -> Result<Rc<Self>, UiBuildError> {
-        let widgets = build_window(application)?;
-        let composer = SmartComposer::new(&widgets);
         let window = Rc::new(Self {
-            widgets,
-            composer,
+            widgets: build_window(application)?,
             service,
+            slots: RefCell::new(Vec::new()),
+            autosaves: RefCell::new(HashMap::new()),
             reminder_to_focus: Cell::new(None),
             suggestions: RefCell::new(None),
+            custom_popover: RefCell::new(None),
+            style_signal_ids: RefCell::new(Vec::new()),
             on_mutation: Box::new(on_mutation),
             on_closed: Box::new(on_closed),
         });
         window.install_menu();
         window.install_window_actions();
         window.connect_signals();
-        window.update_composer();
+        window.connect_appearance();
         window.refresh();
         Ok(window)
     }
 
     pub fn present(&self) {
         self.widgets.window.present();
-        if self.widgets.navigation_view.visible_page_tag().as_deref() == Some("reminders") {
-            self.widgets.composer_input.grab_focus();
+        if self.widgets.navigation_view.visible_page_tag().as_deref() == Some("canvas") {
+            self.focus_after_rebuild(self.focused_canvas_position(), true);
         }
     }
 
@@ -84,16 +105,28 @@ impl MainWindow {
         self.show_error(message);
     }
 
-    pub fn show_reminder(&self, id: Uuid) {
+    pub fn show_reminder(self: &Rc<Self>, id: Uuid) {
+        if !self.flush_canvas() {
+            return;
+        }
         self.reminder_to_focus.set(Some(id));
-        while self.widgets.navigation_view.visible_page_tag().as_deref() != Some("reminders")
+        while self.widgets.navigation_view.visible_page_tag().as_deref() != Some("canvas")
             && self.widgets.navigation_view.pop()
         {}
-        self.refresh();
-        self.present();
+        self.refresh_views(None);
+        self.widgets.window.present();
     }
 
-    pub fn refresh(&self) {
+    pub fn refresh(self: &Rc<Self>) {
+        let focus = self.focused_canvas_position();
+        if !self.flush_canvas() {
+            return;
+        }
+        self.refresh_views(focus);
+    }
+
+    fn refresh_views(self: &Rc<Self>, focus: Option<(Option<Uuid>, i32)>) {
+        self.refresh_canvas(focus);
         match self.service.list_active() {
             Ok(reminders) => self.rebuild_active(reminders),
             Err(error) => self.show_error(&error.to_string()),
@@ -105,6 +138,9 @@ impl MainWindow {
     }
 
     pub fn confirm_quit(&self, application: &adw::Application) {
+        if !self.flush_canvas() {
+            return;
+        }
         match self.service.should_hold_background() {
             Ok(false) => {
                 application.quit();
@@ -116,7 +152,6 @@ impl MainWindow {
                 return;
             }
         }
-
         let dialog = adw::AlertDialog::new(
             Some(&gettextrs::gettext("Quit with reminders pending?")),
             Some(&gettextrs::gettext(
@@ -136,6 +171,10 @@ impl MainWindow {
     fn install_menu(&self) {
         let menu = gio::Menu::new();
         menu.append(
+            Some(&gettextrs::gettext("Active Reminders")),
+            Some("win.show-active-list"),
+        );
+        menu.append(
             Some(&gettextrs::gettext("History")),
             Some("win.show-history"),
         );
@@ -148,309 +187,627 @@ impl MainWindow {
     }
 
     fn install_window_actions(self: &Rc<Self>) {
-        let complete = gio::SimpleAction::new("complete", Some(&String::static_variant_type()));
-        let weak = Rc::downgrade(self);
-        complete.connect_activate(move |_, target| {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            let Some(target) = target.and_then(String::from_variant) else {
-                return;
-            };
-            if let Ok(id) = Uuid::parse_str(&target) {
-                window.complete(id);
+        self.add_uuid_action("complete", |window, id| window.complete(id));
+        self.add_uuid_action("snooze", |window, id| window.snooze(id));
+        self.add_uuid_action("edit", |window, id| window.show_edit_dialog(id));
+        self.add_uuid_action("delete", |window, id| window.delete_reminder_with_undo(id));
+        self.add_uuid_action("delete-canvas", |window, id| {
+            window.delete_canvas_with_undo(id);
+        });
+        self.add_uuid_action("custom-time", |window, id| {
+            if let Some(editor) = window.editor_for_entry(Some(id)) {
+                window.show_custom_when_popover(editor);
             }
         });
-        self.widgets.window.add_action(&complete);
 
-        let snooze = gio::SimpleAction::new("snooze", Some(&String::static_variant_type()));
-        let weak = Rc::downgrade(self);
-        snooze.connect_activate(move |_, target| {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            let Some(target) = target.and_then(String::from_variant) else {
-                return;
-            };
-            if let Ok(id) = Uuid::parse_str(&target) {
-                window.snooze(id);
-            }
-        });
-        self.widgets.window.add_action(&snooze);
+        for (name, tag) in [
+            ("show-active-list", "active-list"),
+            ("show-history", "history"),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(self);
+            action.connect_activate(move |_, _| {
+                if let Some(window) = weak.upgrade()
+                    && window.widgets.navigation_view.visible_page_tag().as_deref() != Some(tag)
+                {
+                    window.widgets.navigation_view.push_by_tag(tag);
+                }
+            });
+            self.widgets.window.add_action(&action);
+        }
 
-        let edit = gio::SimpleAction::new("edit", Some(&String::static_variant_type()));
+        let commit = gio::SimpleAction::new("commit-canvas", None);
         let weak = Rc::downgrade(self);
-        edit.connect_activate(move |_, target| {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            let Some(target) = target.and_then(String::from_variant) else {
-                return;
-            };
-            if let Ok(id) = Uuid::parse_str(&target) {
-                window.show_edit_dialog(id);
-            }
-        });
-        self.widgets.window.add_action(&edit);
-
-        let delete = gio::SimpleAction::new("delete", Some(&String::static_variant_type()));
-        let weak = Rc::downgrade(self);
-        delete.connect_activate(move |_, target| {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            let Some(target) = target.and_then(String::from_variant) else {
-                return;
-            };
-            if let Ok(id) = Uuid::parse_str(&target) {
-                window.delete_with_undo(id);
-            }
-        });
-        self.widgets.window.add_action(&delete);
-
-        let show_history = gio::SimpleAction::new("show-history", None);
-        let weak = Rc::downgrade(self);
-        show_history.connect_activate(move |_, _| {
-            if let Some(window) = weak.upgrade()
-                && window.widgets.navigation_view.visible_page_tag().as_deref() != Some("history")
-            {
-                window.widgets.navigation_view.push_by_tag("history");
-            }
-        });
-        self.widgets.window.add_action(&show_history);
-
-        let submit = gio::SimpleAction::new("submit", None);
-        let weak = Rc::downgrade(self);
-        submit.connect_activate(move |_, _| {
+        commit.connect_activate(move |_, _| {
             if let Some(window) = weak.upgrade() {
-                window.submit_composer();
+                window.commit_focused();
             }
         });
-        self.widgets.window.add_action(&submit);
+        self.widgets.window.add_action(&commit);
+    }
 
-        let suggestion =
-            gio::SimpleAction::new("use-suggestion", Some(&String::static_variant_type()));
+    fn add_uuid_action(self: &Rc<Self>, name: &str, callback: impl Fn(&Rc<Self>, Uuid) + 'static) {
+        let action = gio::SimpleAction::new(name, Some(&String::static_variant_type()));
         let weak = Rc::downgrade(self);
-        suggestion.connect_activate(move |_, target| {
-            let Some(window) = weak.upgrade() else {
+        action.connect_activate(move |_, target| {
+            let Some(window) = weak.upgrade() else { return };
+            let Some(target) = target.and_then(String::from_variant) else {
                 return;
             };
-            if let Some(phrase) = target.and_then(String::from_variant) {
-                window.apply_suggestion(&phrase);
+            if let Ok(id) = Uuid::parse_str(&target) {
+                callback(&window, id);
             }
         });
-        self.widgets.window.add_action(&suggestion);
-
-        let custom = gio::SimpleAction::new("custom-time", None);
-        let weak = Rc::downgrade(self);
-        custom.connect_activate(move |_, _| {
-            if let Some(window) = weak.upgrade() {
-                window.show_custom_when_popover();
-            }
-        });
-        self.widgets.window.add_action(&custom);
+        self.widgets.window.add_action(&action);
     }
 
     fn connect_signals(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        self.widgets.add_button.connect_clicked(move |_| {
+        self.widgets.active_list_button.connect_clicked(move |_| {
             if let Some(window) = weak.upgrade() {
-                window.submit_composer();
+                window.widgets.navigation_view.push_by_tag("active-list");
             }
         });
-
-        let weak = Rc::downgrade(self);
-        self.widgets
-            .composer_input
-            .buffer()
-            .connect_changed(move |_| {
-                if let Some(window) = weak.upgrade() {
-                    window.update_composer();
-                }
-            });
-
-        let keys = gtk::EventControllerKey::new();
-        let weak = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, _| {
-            let Some(window) = weak.upgrade() else {
-                return glib::Propagation::Proceed;
-            };
-            match key {
-                gtk::gdk::Key::Up if window.has_suggestions() => {
-                    window.move_suggestion(-1);
-                    glib::Propagation::Stop
-                }
-                gtk::gdk::Key::Down if window.has_suggestions() => {
-                    window.move_suggestion(1);
-                    glib::Propagation::Stop
-                }
-                gtk::gdk::Key::Escape if window.has_suggestions() => {
-                    window.dismiss_suggestions();
-                    glib::Propagation::Stop
-                }
-                gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
-                    if window.has_suggestions() {
-                        window.accept_selected_suggestion();
-                    } else {
-                        window.submit_composer();
-                    }
-                    glib::Propagation::Stop
-                }
-                _ => glib::Propagation::Proceed,
-            }
-        });
-        self.widgets.composer_input.add_controller(keys);
-
-        let schedule_click = gtk::GestureClick::new();
-        let weak = Rc::downgrade(self);
-        schedule_click.connect_released(move |_, _, x, y| {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            let Some(iter) = window
-                .widgets
-                .composer_input
-                .iter_at_location(x as i32, y as i32)
-            else {
-                return;
-            };
-            let input = window.composer.text();
-            let parsed = parse_english(&input);
-            let Some(span) = parsed.schedule_span else {
-                return;
-            };
-            let start = input[..span.start].chars().count() as i32;
-            let end = input[..span.end].chars().count() as i32;
-            if (start..=end).contains(&iter.offset()) {
-                window.show_custom_when_popover();
-            }
-        });
-        self.widgets.composer_input.add_controller(schedule_click);
-
-        let weak = Rc::downgrade(self);
-        self.widgets.preview_button.connect_clicked(move |_| {
-            if let Some(window) = weak.upgrade() {
-                glib::idle_add_local_once(move || window.show_custom_when_popover());
-            }
-        });
-
         let weak = Rc::downgrade(self);
         self.widgets.clear_history_button.connect_clicked(move |_| {
             if let Some(window) = weak.upgrade() {
                 window.confirm_clear_history();
             }
         });
-
         let weak = Rc::downgrade(self);
         self.widgets.window.connect_close_request(move |_| {
             if let Some(window) = weak.upgrade() {
+                if !window.flush_canvas() {
+                    return glib::Propagation::Stop;
+                }
                 (window.on_closed)();
             }
             glib::Propagation::Proceed
         });
     }
 
-    fn submit_composer(&self) {
-        let input = self.composer.text();
-        let parsed = parse_english(&input);
-        let schedule = match &parsed.status {
-            ScheduleParseStatus::Default => default_schedule(),
-            ScheduleParseStatus::Valid(schedule) => schedule.clone(),
-            ScheduleParseStatus::Partial => {
-                self.composer
-                    .set_error(Some(&gettextrs::gettext("Finish the schedule after @")));
-                return;
+    fn connect_appearance(self: &Rc<Self>) {
+        let manager = adw::StyleManager::default();
+        let weak = Rc::downgrade(self);
+        let accent = manager.connect_accent_color_notify(move |manager| {
+            if let Some(window) = weak.upgrade() {
+                window.update_canvas_accents(manager);
             }
-            ScheduleParseStatus::Invalid(error) => {
-                self.composer
-                    .set_error(Some(&localized_schedule_parse_error(*error)));
+        });
+        let weak = Rc::downgrade(self);
+        let dark = manager.connect_dark_notify(move |manager| {
+            if let Some(window) = weak.upgrade() {
+                window.update_canvas_accents(manager);
+            }
+        });
+        self.style_signal_ids.borrow_mut().extend([accent, dark]);
+    }
+
+    fn update_canvas_accents(&self, manager: &adw::StyleManager) {
+        for slot in self.slots.borrow().iter() {
+            slot.editor.update_accent(manager);
+        }
+    }
+
+    fn refresh_canvas(self: &Rc<Self>, focus: Option<(Option<Uuid>, i32)>) {
+        let items = match self.service.list_canvas() {
+            Ok(items) => items,
+            Err(error) => {
+                self.show_error(&error.to_string());
                 return;
             }
         };
-        let result = self
-            .service
-            .create_scheduled(parsed.message, &schedule, &Local);
-        match result {
-            Ok(_) => {
-                self.composer.clear();
-                self.refresh();
-                (self.on_mutation)();
-            }
-            Err(ServiceError::InvalidReminder(error)) => {
-                self.composer
-                    .set_error(Some(&localized_reminder_error(error)));
-            }
-            Err(error) => self
-                .composer
-                .set_error(Some(&localized_service_error(&error))),
+        if self.sync_canvas(&items) {
+            self.focus_after_rebuild(focus, false);
+        } else {
+            self.rebuild_canvas(items, focus);
         }
     }
 
-    fn update_composer(self: &Rc<Self>) {
-        let input = self.composer.text();
-        let parsed = parse_english(&input);
-        self.composer.update_placeholder();
-        self.composer
-            .update_span(&input, parsed.schedule_span.clone());
-        self.dismiss_suggestions();
+    fn sync_canvas(self: &Rc<Self>, items: &[CanvasItem]) -> bool {
+        let same_structure = {
+            let slots = self.slots.borrow();
+            slots.len() == items.len() + 1
+                && slots.iter().zip(items).all(|(slot, item)| {
+                    slot.editor.entry_id == Some(item.entry.id)
+                        && slot.editor.reminder_id == item.entry.reminder_id
+                })
+        };
+        if !same_structure {
+            return false;
+        }
 
+        let now = self.service.now();
+        let clock_format = system_clock_format();
+        let mut updates = Vec::with_capacity(items.len());
+        {
+            let mut slots = self.slots.borrow_mut();
+            for (slot, item) in slots.iter_mut().zip(items.iter().cloned()) {
+                let old_text = slot.editor.text();
+                let old_committed = slot.committed_text.clone();
+                let old_suffix = slot.editor.committed_suffix();
+                let suffix = item.reminder.as_ref().map(|reminder| {
+                    format_schedule_suffix(reminder.due_at, now, &Local, clock_format)
+                });
+                let committed_text = committed_canvas_text(&item, suffix.as_deref());
+                let visible_text = item.entry.working_text.as_deref().map_or_else(
+                    || committed_text.clone(),
+                    |working| {
+                        if old_text != old_committed {
+                            match (old_suffix.as_deref(), suffix.as_deref()) {
+                                (Some(previous), Some(current)) => {
+                                    normalize_registered_suffix(&old_text, previous, current)
+                                }
+                                _ => old_text.clone(),
+                            }
+                        } else {
+                            item.reminder.as_ref().map_or_else(
+                                || working.to_owned(),
+                                |reminder| {
+                                    normalize_stored_working_suffix(
+                                        working,
+                                        reminder.due_at,
+                                        item.entry.updated_at,
+                                        now,
+                                        &Local,
+                                        clock_format,
+                                    )
+                                },
+                            )
+                        }
+                    },
+                );
+                let needs_persist = item
+                    .entry
+                    .working_text
+                    .as_deref()
+                    .is_some_and(|working| working != visible_text);
+                slot.item = Some(item);
+                slot.committed_text = committed_text;
+                slot.editor.set_committed_suffix(suffix);
+                updates.push((slot.editor.clone(), visible_text, needs_persist));
+            }
+        }
+
+        for (editor, text, needs_persist) in updates {
+            if editor.text() != text {
+                let cursor = editor.input.buffer().cursor_position();
+                editor.input.buffer().set_text(&text);
+                let buffer = editor.input.buffer();
+                let cursor = cursor.clamp(0, buffer.char_count());
+                buffer.place_cursor(&buffer.iter_at_offset(cursor));
+            }
+            self.update_editor(&editor);
+            if needs_persist {
+                let _ = self.flush_editor(&editor);
+            }
+        }
+        self.update_placeholder();
+        true
+    }
+
+    fn rebuild_canvas(self: &Rc<Self>, items: Vec<CanvasItem>, focus: Option<(Option<Uuid>, i32)>) {
+        self.cancel_autosaves();
+        clear_box(&self.widgets.canvas_entries);
+        self.slots.borrow_mut().clear();
+        for item in items {
+            let suffix = item.reminder.as_ref().map(|reminder| {
+                format_schedule_suffix(
+                    reminder.due_at,
+                    self.service.now(),
+                    &Local,
+                    system_clock_format(),
+                )
+            });
+            let committed_text = committed_canvas_text(&item, suffix.as_deref());
+            let text = item.entry.working_text.as_deref().map_or_else(
+                || committed_text.clone(),
+                |working| {
+                    item.reminder.as_ref().map_or_else(
+                        || working.to_owned(),
+                        |reminder| {
+                            normalize_stored_working_suffix(
+                                working,
+                                reminder.due_at,
+                                item.entry.updated_at,
+                                self.service.now(),
+                                &Local,
+                                system_clock_format(),
+                            )
+                        },
+                    )
+                },
+            );
+            let editor = Rc::new(CanvasEditor::saved(&item, &text, suffix));
+            self.widgets.canvas_entries.append(&editor.root);
+            self.slots.borrow_mut().push(CanvasSlot {
+                editor: editor.clone(),
+                item: Some(item),
+                committed_text,
+            });
+            self.connect_editor(editor);
+        }
+        let draft_text = self.service.load_canvas_draft().unwrap_or_else(|error| {
+            self.show_error(&error.to_string());
+            String::new()
+        });
+        let draft = Rc::new(CanvasEditor::draft(&draft_text));
+        self.widgets.canvas_entries.append(&draft.root);
+        self.slots.borrow_mut().push(CanvasSlot {
+            editor: draft.clone(),
+            item: None,
+            committed_text: String::new(),
+        });
+        self.connect_editor(draft);
+        self.update_placeholder();
+        self.focus_after_rebuild(focus, true);
+    }
+
+    fn connect_editor(self: &Rc<Self>, editor: Rc<CanvasEditor>) {
+        self.update_editor(&editor);
+        let weak = Rc::downgrade(self);
+        let changed_editor = Rc::downgrade(&editor);
+        editor.input.buffer().connect_changed(move |_| {
+            if let (Some(window), Some(changed_editor)) = (weak.upgrade(), changed_editor.upgrade())
+            {
+                window.update_editor(&changed_editor);
+                window.schedule_autosave(changed_editor.clone());
+                window.update_placeholder();
+            }
+        });
+
+        let keys = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(self);
+        let keyed_editor = Rc::downgrade(&editor);
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            let (Some(window), Some(keyed_editor)) = (weak.upgrade(), keyed_editor.upgrade())
+            else {
+                return glib::Propagation::Proceed;
+            };
+            match key {
+                gtk::gdk::Key::Up if window.suggestions_for(&keyed_editor) => {
+                    window.move_suggestion(-1);
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::Down if window.suggestions_for(&keyed_editor) => {
+                    window.move_suggestion(1);
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::Escape if window.suggestions_for(&keyed_editor) => {
+                    window.dismiss_suggestions();
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::Escape if keyed_editor.entry_id.is_some() => {
+                    window.revert_editor(&keyed_editor);
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::Menu => {
+                    if keyed_editor.open_actions() {
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                }
+                gtk::gdk::Key::F10 if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) => {
+                    if keyed_editor.open_actions() {
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                }
+                gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter
+                    if !modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                {
+                    if window.suggestions_for(&keyed_editor) {
+                        window.accept_selected_suggestion();
+                    } else {
+                        window.commit_editor(&keyed_editor);
+                    }
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        editor.input.add_controller(keys);
+
+        let focus = gtk::EventControllerFocus::new();
+        let weak = Rc::downgrade(self);
+        let focused_editor = Rc::downgrade(&editor);
+        focus.connect_leave(move |_| {
+            if let (Some(window), Some(focused_editor)) = (weak.upgrade(), focused_editor.upgrade())
+            {
+                let _ = window.flush_editor(&focused_editor);
+            }
+        });
+        editor.input.add_controller(focus);
+
+        let click = gtk::GestureClick::new();
+        let weak = Rc::downgrade(self);
+        let clicked_editor = Rc::downgrade(&editor);
+        click.connect_released(move |gesture, _, x, y| {
+            if gesture.current_button() != 1 {
+                return;
+            }
+            let (Some(window), Some(clicked_editor)) = (weak.upgrade(), clicked_editor.upgrade())
+            else {
+                return;
+            };
+            let Some(iter) = clicked_editor.input.iter_at_location(x as i32, y as i32) else {
+                return;
+            };
+            let text = clicked_editor.text();
+            let parsed = parse_english(&text);
+            let Some(span) = parsed.schedule_span else {
+                return;
+            };
+            let start = text[..span.start].chars().count() as i32;
+            let end = text[..span.end].chars().count() as i32;
+            if (start..=end).contains(&iter.offset()) {
+                window.show_custom_when_popover(clicked_editor.clone());
+            }
+        });
+        editor.input.add_controller(click);
+    }
+
+    fn update_editor(self: &Rc<Self>, editor: &Rc<CanvasEditor>) {
+        let text = editor.text();
+        let parsed = parse_english(&text);
+        let committed = self
+            .slot(editor.entry_id)
+            .is_some_and(|slot| slot.committed_text == text);
+        let keeps_existing = keeps_existing_suffix(editor, &text, parsed.schedule_span.as_ref());
+        editor.apply_schedule_span(
+            &text,
+            parsed.schedule_span.clone(),
+            committed && editor.reminder_id.is_some(),
+        );
+        let error = if committed {
+            None
+        } else if parsed.message.chars().count() > 280 {
+            Some(gettextrs::gettext(
+                "Notes and reminder messages can contain at most 280 characters",
+            ))
+        } else {
+            match &parsed.status {
+                ScheduleParseStatus::Default => None,
+                ScheduleParseStatus::Valid(_) if keeps_existing => None,
+                ScheduleParseStatus::Valid(schedule) => self
+                    .service
+                    .preview_schedule(schedule, &Local)
+                    .err()
+                    .map(|error| localized_service_error(&error)),
+                ScheduleParseStatus::Partial => {
+                    Some(gettextrs::gettext("Finish the schedule after @"))
+                }
+                ScheduleParseStatus::Invalid(error) => Some(localized_schedule_parse_error(*error)),
+            }
+        };
+        editor.set_error(error.as_deref());
+        let committed_suffix = editor.committed_suffix();
+        editor.set_dirty_registered(!committed, committed_suffix.as_deref().unwrap_or_default());
+        if matches!(parsed.status, ScheduleParseStatus::Partial) && editor.input.has_focus() {
+            self.show_suggestions(editor.clone());
+        } else if self.suggestions_for(editor) {
+            self.dismiss_suggestions();
+        }
+    }
+
+    fn commit_focused(self: &Rc<Self>) {
+        let focused = gtk::prelude::GtkWindowExt::focus(&self.widgets.window);
+        let editor = self
+            .slots
+            .borrow()
+            .iter()
+            .find(|slot| {
+                focused
+                    .as_ref()
+                    .is_some_and(|focused| slot.editor.input.upcast_ref::<gtk::Widget>() == focused)
+            })
+            .map(|slot| slot.editor.clone())
+            .or_else(|| self.editor_for_entry(None));
+        if let Some(editor) = editor {
+            self.commit_editor(&editor);
+        }
+    }
+
+    fn commit_editor(self: &Rc<Self>, editor: &Rc<CanvasEditor>) {
+        self.dismiss_suggestions();
+        let text = editor.text();
+        let parsed = parse_english(&text);
         if parsed.message.chars().count() > 280 {
-            self.composer.set_can_submit(false);
-            self.composer.set_error(Some(&gettextrs::gettext(
-                "Reminder messages can contain at most 280 characters",
+            editor.set_error(Some(&gettextrs::gettext(
+                "Notes and reminder messages can contain at most 280 characters",
             )));
             return;
         }
-
-        match &parsed.status {
-            ScheduleParseStatus::Default => {
-                self.composer.set_preview(&gettextrs::gettext("In 1 hour"));
-                self.composer.set_error(None);
-                self.composer
-                    .set_can_submit(!parsed.message.trim().is_empty());
-            }
+        let keeps_existing = keeps_existing_suffix(editor, &text, parsed.schedule_span.as_ref());
+        let schedule = match parsed.status {
+            ScheduleParseStatus::Default => CanvasSchedule::None,
+            ScheduleParseStatus::Valid(_) if keeps_existing => CanvasSchedule::KeepExisting,
+            ScheduleParseStatus::Valid(expression) => CanvasSchedule::Replace(expression),
             ScheduleParseStatus::Partial => {
-                self.composer
-                    .set_preview(&gettextrs::gettext("Incomplete schedule"));
-                self.composer
-                    .set_error(Some(&gettextrs::gettext("Finish the schedule after @")));
-                self.composer.set_can_submit(false);
-                self.show_suggestions();
+                editor.set_error(Some(&gettextrs::gettext("Finish the schedule after @")));
+                return;
             }
             ScheduleParseStatus::Invalid(error) => {
-                self.composer
-                    .set_preview(&gettextrs::gettext("Invalid schedule"));
-                self.composer
-                    .set_error(Some(&localized_schedule_parse_error(*error)));
-                self.composer.set_can_submit(false);
+                editor.set_error(Some(&localized_schedule_parse_error(error)));
+                return;
             }
-            ScheduleParseStatus::Valid(schedule) => {
-                match self.service.preview_schedule(schedule, &Local) {
-                    Ok(due_at) => {
-                        self.composer.set_preview(&format_local_datetime(due_at));
-                        self.composer.set_error(None);
-                        self.composer
-                            .set_can_submit(!parsed.message.trim().is_empty());
-                    }
-                    Err(error) => {
-                        self.composer
-                            .set_preview(&gettextrs::gettext("Invalid schedule"));
-                        self.composer
-                            .set_error(Some(&localized_service_error(&error)));
-                        self.composer.set_can_submit(false);
-                    }
+        };
+        if parsed.message.trim().is_empty() {
+            if matches!(schedule, CanvasSchedule::None) {
+                if let Some(entry_id) = editor.entry_id {
+                    self.delete_canvas_with_undo(entry_id);
                 }
+            } else {
+                editor.set_error(Some(&gettextrs::gettext(
+                    "Enter a note or reminder message",
+                )));
+            }
+            return;
+        }
+        if !self.flush_canvas() {
+            return;
+        }
+        let result = if let Some(entry_id) = editor.entry_id {
+            self.service
+                .commit_canvas_edit(entry_id, parsed.message, schedule, &Local)
+        } else {
+            self.service
+                .commit_canvas_draft(parsed.message, schedule, &Local)
+        };
+        match result {
+            Ok(_) => {
+                self.after_mutation();
+                self.focus_draft_later();
+            }
+            Err(error) => editor.set_error(Some(&localized_service_error(&error))),
+        }
+    }
+
+    fn revert_editor(self: &Rc<Self>, editor: &Rc<CanvasEditor>) {
+        let Some(entry_id) = editor.entry_id else {
+            return;
+        };
+        if !self.flush_canvas_except_entry(entry_id) {
+            return;
+        }
+        if let Some(source) = self
+            .autosaves
+            .borrow_mut()
+            .remove(&editor_key(Some(entry_id)))
+        {
+            source.remove();
+        }
+        if let Err(error) = self.service.discard_canvas_working_text(entry_id) {
+            self.show_error(&error.to_string());
+            return;
+        }
+        self.refresh_views(Some((Some(entry_id), 0)));
+    }
+
+    fn schedule_autosave(self: &Rc<Self>, editor: Rc<CanvasEditor>) {
+        let key = editor_key(editor.entry_id);
+        if let Some(source) = self.autosaves.borrow_mut().remove(&key) {
+            source.remove();
+        }
+        let closure_key = key.clone();
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(StdDuration::from_millis(350), move || {
+            if let Some(window) = weak.upgrade() {
+                window.autosaves.borrow_mut().remove(&closure_key);
+                window.persist_editor(&editor);
+            }
+        });
+        self.autosaves.borrow_mut().insert(key, source);
+    }
+
+    fn flush_editor(&self, editor: &Rc<CanvasEditor>) -> bool {
+        let key = editor_key(editor.entry_id);
+        if let Some(source) = self.autosaves.borrow_mut().remove(&key) {
+            source.remove();
+        }
+        self.persist_editor(editor)
+    }
+
+    fn persist_editor(&self, editor: &Rc<CanvasEditor>) -> bool {
+        let text = editor.text();
+        let result = if let Some(entry_id) = editor.entry_id {
+            let committed = self
+                .slot(Some(entry_id))
+                .map(|slot| slot.committed_text.clone())
+                .unwrap_or_default();
+            let dirty = text != committed;
+            let persisted = if dirty {
+                self.normalized_working_text(editor, &text)
+            } else {
+                text
+            };
+            self.service
+                .save_canvas_working_text(entry_id, dirty.then_some(persisted.as_str()))
+        } else {
+            self.service.save_canvas_draft(&text)
+        };
+        match result {
+            Ok(()) => true,
+            Err(error) => {
+                self.show_error(&format!(
+                    "{}: {error}",
+                    gettextrs::gettext("Could not save canvas changes")
+                ));
+                false
             }
         }
     }
 
-    fn show_suggestions(self: &Rc<Self>) {
-        if self.suggestions.borrow().is_some() {
+    fn flush_canvas(&self) -> bool {
+        let editors = self
+            .slots
+            .borrow()
+            .iter()
+            .map(|slot| slot.editor.clone())
+            .collect::<Vec<_>>();
+        let mut all_saved = true;
+        for editor in editors {
+            if !self.flush_editor(&editor) {
+                all_saved = false;
+            }
+        }
+        all_saved
+    }
+
+    fn flush_canvas_except_entry(&self, excluded: Uuid) -> bool {
+        let editors = self
+            .slots
+            .borrow()
+            .iter()
+            .filter(|slot| slot.editor.entry_id != Some(excluded))
+            .map(|slot| slot.editor.clone())
+            .collect::<Vec<_>>();
+        let mut all_saved = true;
+        for editor in editors {
+            if !self.flush_editor(&editor) {
+                all_saved = false;
+            }
+        }
+        all_saved
+    }
+
+    fn normalized_working_text(&self, editor: &CanvasEditor, text: &str) -> String {
+        let previous = editor.committed_suffix();
+        let Some(previous) = previous.as_deref() else {
+            return text.to_owned();
+        };
+        let Some(reminder) = self
+            .slot(editor.entry_id)
+            .and_then(|slot| slot.item.as_ref()?.reminder.clone())
+        else {
+            return text.to_owned();
+        };
+        let current = format_schedule_suffix(
+            reminder.due_at,
+            self.service.now(),
+            &Local,
+            system_clock_format(),
+        );
+        normalize_registered_suffix(text, previous, &current)
+    }
+
+    fn cancel_autosaves(&self) {
+        for (_, source) in self.autosaves.borrow_mut().drain() {
+            source.remove();
+        }
+    }
+
+    fn show_suggestions(self: &Rc<Self>, editor: Rc<CanvasEditor>) {
+        if self.suggestions_for(&editor) {
             return;
         }
+        self.dismiss_suggestions();
         let popover = gtk::Popover::new();
-        popover.set_parent(&self.widgets.composer_card);
+        popover.set_parent(&editor.input);
         popover.set_autohide(false);
+        popover.set_position(gtk::PositionType::Bottom);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.add_css_class("suggestions");
@@ -471,34 +828,33 @@ impl MainWindow {
         }
         list.select_row(list.row_at_index(0).as_ref());
         popover.set_child(Some(&list));
-
         let weak = Rc::downgrade(self);
         list.connect_row_activated(move |_, row| {
             if let Some(window) = weak.upgrade() {
                 window.accept_suggestion(row.index() as usize);
             }
         });
-        let weak = Rc::downgrade(self);
-        popover.connect_closed(move |popover| {
-            popover.unparent();
-            if let Some(window) = weak.upgrade() {
-                window.suggestions.borrow_mut().take();
-            }
-        });
         popover.popup();
-        *self.suggestions.borrow_mut() = Some(SuggestionMenu { popover, list });
-        self.widgets.composer_input.grab_focus();
+        *self.suggestions.borrow_mut() = Some(SuggestionMenu {
+            popover,
+            list,
+            target: editor.entry_id,
+        });
+        editor.input.grab_focus();
     }
 
     fn dismiss_suggestions(&self) {
-        let menu = self.suggestions.borrow_mut().take();
-        if let Some(menu) = menu {
+        if let Some(menu) = self.suggestions.borrow_mut().take() {
             menu.popover.popdown();
+            menu.popover.unparent();
         }
     }
 
-    fn has_suggestions(&self) -> bool {
-        self.suggestions.borrow().is_some()
+    fn suggestions_for(&self, editor: &CanvasEditor) -> bool {
+        self.suggestions
+            .borrow()
+            .as_ref()
+            .is_some_and(|menu| menu.target == editor.entry_id)
     }
 
     fn move_suggestion(&self, offset: i32) {
@@ -507,8 +863,7 @@ impl MainWindow {
             return;
         };
         let current = menu.list.selected_row().map_or(0, |row| row.index());
-        let last = SUGGESTIONS.len() as i32 - 1;
-        let next = (current + offset).clamp(0, last);
+        let next = (current + offset).clamp(0, SUGGESTIONS.len() as i32 - 1);
         menu.list.select_row(menu.list.row_at_index(next).as_ref());
     }
 
@@ -523,39 +878,60 @@ impl MainWindow {
     }
 
     fn accept_suggestion(self: &Rc<Self>, index: usize) {
+        let target = self
+            .suggestions
+            .borrow()
+            .as_ref()
+            .map(|menu| menu.target)
+            .unwrap_or(None);
         self.dismiss_suggestions();
+        let Some(editor) = self.editor_for_entry(target) else {
+            return;
+        };
         match SUGGESTIONS.get(index).copied().flatten() {
-            Some(phrase) => self.apply_suggestion(phrase),
-            None => self.show_custom_when_popover(),
+            Some(phrase) => self.replace_schedule_text(&editor, phrase),
+            None => self.show_custom_when_popover(editor),
         }
     }
 
-    fn apply_suggestion(self: &Rc<Self>, phrase: &str) {
-        let input = self.composer.text();
+    fn replace_schedule_text(&self, editor: &CanvasEditor, phrase: &str) {
+        let input = editor.text();
         let parsed = parse_english(&input);
         let message_end = parsed
             .schedule_span
             .as_ref()
             .map_or(input.len(), |span| span.start);
         let message = input[..message_end].trim_end();
-        self.widgets
-            .composer_input
+        editor
+            .input
             .buffer()
             .set_text(&format!("{message} @{phrase}"));
-        self.widgets.composer_input.grab_focus();
+        editor.input.grab_focus();
     }
 
-    fn show_custom_when_popover(self: &Rc<Self>) {
+    fn show_custom_when_popover(self: &Rc<Self>, editor: Rc<CanvasEditor>) {
         self.dismiss_suggestions();
-        let local_due = self
-            .service
-            .preview_schedule(&current_schedule(&self.composer.text()), &Local)
-            .or_else(|_| self.service.preview_schedule(&default_schedule(), &Local))
-            .unwrap_or_else(|_| default_due_time(Utc::now()))
+        if let Some(previous) = self.custom_popover.borrow_mut().take() {
+            previous.popdown();
+            previous.unparent();
+        }
+        let parsed = parse_english(&editor.text());
+        let current = match parsed.status {
+            ScheduleParseStatus::Valid(schedule) => Some(schedule),
+            _ => None,
+        };
+        let local_due = current
+            .as_ref()
+            .and_then(|schedule| self.service.preview_schedule(schedule, &Local).ok())
+            .or_else(|| {
+                editor
+                    .reminder_id
+                    .and_then(|id| self.service.get(id).ok().map(|reminder| reminder.due_at))
+            })
+            .unwrap_or_else(|| default_due_time(self.service.now()))
             .with_timezone(&Local);
-
         let popover = gtk::Popover::new();
-        popover.set_parent(&self.widgets.preview_button);
+        popover.set_parent(&editor.input);
         popover.add_css_class("menu");
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
         content.set_margin_top(12);
@@ -567,9 +943,6 @@ impl MainWindow {
         title.add_css_class("heading");
         title.set_halign(gtk::Align::Start);
         content.append(&title);
-        let cancel = gtk::Button::with_label(&gettextrs::gettext("Cancel"));
-        let select = gtk::Button::with_label(&gettextrs::gettext("Apply"));
-        select.add_css_class("suggested-action");
         let calendar = gtk::Calendar::new();
         if let Some(date) = glib_local_noon(local_due.date_naive()) {
             calendar.set_date(&date);
@@ -580,45 +953,43 @@ impl MainWindow {
         hour.set_value(local_due.hour() as f64);
         hour.set_wrap(true);
         hour.set_tooltip_text(Some(&gettextrs::gettext("Hour")));
-        let separator = gtk::Label::new(Some(":"));
         let minute = gtk::SpinButton::with_range(0.0, 59.0, 1.0);
         minute.set_value(local_due.minute() as f64);
         minute.set_wrap(true);
         minute.set_tooltip_text(Some(&gettextrs::gettext("Minute")));
         controls.append(&hour);
-        controls.append(&separator);
+        controls.append(&gtk::Label::new(Some(":")));
         controls.append(&minute);
-        let error_label = gtk::Label::new(None);
-        error_label.set_visible(false);
-        error_label.set_halign(gtk::Align::Start);
-        error_label.set_wrap(true);
-        error_label.add_css_class("error");
+        let error = gtk::Label::new(None);
+        error.set_visible(false);
+        error.set_halign(gtk::Align::Start);
+        error.set_wrap(true);
+        error.add_css_class("error");
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label(&gettextrs::gettext("Cancel"));
+        let apply = gtk::Button::with_label(&gettextrs::gettext("Apply"));
+        apply.add_css_class("suggested-action");
         actions.append(&cancel);
-        actions.append(&select);
+        actions.append(&apply);
         content.append(&calendar);
         content.append(&controls);
-        content.append(&error_label);
+        content.append(&error);
         content.append(&actions);
         popover.set_child(Some(&content));
-
-        let error_to_clear = error_label.clone();
-        calendar.connect_day_selected(move |_| error_to_clear.set_visible(false));
-        let error_to_clear = error_label.clone();
-        hour.connect_value_changed(move |_| error_to_clear.set_visible(false));
-        let error_to_clear = error_label.clone();
-        minute.connect_value_changed(move |_| error_to_clear.set_visible(false));
-
-        let popover_to_cancel = popover.clone();
+        let cancel_popover = popover.downgrade();
         cancel.connect_clicked(move |_| {
-            popover_to_cancel.popdown();
+            if let Some(popover) = cancel_popover.upgrade() {
+                popover.popdown();
+            }
         });
 
         let weak = Rc::downgrade(self);
-        let popover_to_select = popover.clone();
-        select.connect_clicked(move |_| {
-            let Some(window) = weak.upgrade() else {
+        let apply_editor = Rc::downgrade(&editor);
+        let apply_popover = popover.downgrade();
+        apply.connect_clicked(move |_| {
+            let (Some(window), Some(apply_editor)) = (weak.upgrade(), apply_editor.upgrade())
+            else {
                 return;
             };
             let selected = calendar.date();
@@ -627,7 +998,7 @@ impl MainWindow {
                 selected.month() as u32,
                 selected.day_of_month() as u32,
             ) else {
-                show_inline_error(&error_label, &gettextrs::gettext("Choose a valid date"));
+                show_inline_error(&error, &gettextrs::gettext("Choose a valid date"));
                 return;
             };
             let Some(time) = chrono::NaiveTime::from_hms_opt(
@@ -635,33 +1006,54 @@ impl MainWindow {
                 minute.value_as_int() as u32,
                 0,
             ) else {
-                show_inline_error(&error_label, &gettextrs::gettext("Choose a valid time"));
+                show_inline_error(&error, &gettextrs::gettext("Choose a valid time"));
                 return;
             };
             let schedule = ScheduleExpression::Date {
-                day: crate::schedule::DaySpec::Exact(date),
+                day: DaySpec::Exact(date),
                 time: Some(time),
             };
-            if let Err(error) = window.service.preview_schedule(&schedule, &Local) {
-                show_inline_error(&error_label, &localized_service_error(&error));
+            if let Err(problem) = window.service.preview_schedule(&schedule, &Local) {
+                show_inline_error(&error, &localized_service_error(&problem));
                 return;
             }
-            window.apply_suggestion(&canonical_custom_phrase(date, time));
-            popover_to_select.popdown();
+            if let Some(entry_id) = apply_editor.entry_id
+                && apply_editor.reminder_id.is_some()
+            {
+                let parsed = parse_english(&apply_editor.text());
+                if !window.flush_canvas() {
+                    return;
+                }
+                match window.service.commit_canvas_edit(
+                    entry_id,
+                    parsed.message,
+                    CanvasSchedule::Replace(schedule),
+                    &Local,
+                ) {
+                    Ok(_) => window.after_mutation(),
+                    Err(problem) => {
+                        show_inline_error(&error, &localized_service_error(&problem));
+                        return;
+                    }
+                }
+            } else {
+                window.replace_schedule_text(&apply_editor, &canonical_custom_phrase(date, time));
+            }
+            if let Some(popover) = apply_popover.upgrade() {
+                popover.popdown();
+            }
         });
-        let popover_to_unparent = popover.clone();
-        popover.connect_closed(move |_| popover_to_unparent.unparent());
         popover.popup();
+        *self.custom_popover.borrow_mut() = Some(popover);
     }
 
     fn rebuild_active(&self, reminders: Vec<Reminder>) {
         clear_box(&self.widgets.active_groups);
         let is_empty = reminders.is_empty();
         self.widgets
-            .reminders_content
+            .active_content
             .set_visible_child_name(if is_empty { "empty" } else { "list" });
-        let grouped = group_active_reminders(reminders, Utc::now(), &Local);
-
+        let grouped = group_active_reminders(reminders, self.service.now(), &Local);
         for group_name in ReminderGroup::ALL {
             let reminders = &grouped[&group_name];
             if reminders.is_empty() {
@@ -670,19 +1062,11 @@ impl MainWindow {
             let group = rows::FlatGroup::new(&localized_group_title(group_name));
             for reminder in reminders {
                 let overdue = group_name == ReminderGroup::Overdue;
-                let row = rows::active_reminder_row(
+                group.rows.append(&rows::active_reminder_row(
                     reminder,
                     overdue,
                     &format_due(reminder.due_at, overdue),
-                );
-                if self.reminder_to_focus.get() == Some(reminder.id) {
-                    self.reminder_to_focus.set(None);
-                    let row_to_focus = row.clone();
-                    glib::idle_add_local_once(move || {
-                        row_to_focus.grab_focus();
-                    });
-                }
-                group.rows.append(&row);
+                ));
             }
             self.widgets.active_groups.append(&group.widget);
         }
@@ -690,14 +1074,13 @@ impl MainWindow {
 
     fn rebuild_history(&self, reminders: Vec<Reminder>) {
         clear_box(&self.widgets.history_list);
-        let is_empty = reminders.is_empty();
-        self.widgets.history_empty.set_visible(is_empty);
-        self.widgets.history_list.set_visible(!is_empty);
-        self.widgets.clear_history_button.set_sensitive(!is_empty);
-        if is_empty {
+        let empty = reminders.is_empty();
+        self.widgets.history_empty.set_visible(empty);
+        self.widgets.history_list.set_visible(!empty);
+        self.widgets.clear_history_button.set_sensitive(!empty);
+        if empty {
             return;
         }
-
         let group = rows::FlatGroup::new(&gettextrs::gettext("Completed"));
         for reminder in reminders {
             let completed = reminder
@@ -714,21 +1097,73 @@ impl MainWindow {
         self.widgets.history_list.append(&group.widget);
     }
 
-    fn complete(&self, id: Uuid) {
+    fn complete(self: &Rc<Self>, id: Uuid) {
+        if !self.flush_canvas() {
+            return;
+        }
         match self.service.complete(id) {
             Ok(_) => self.after_mutation(),
             Err(error) => self.show_error(&error.to_string()),
         }
     }
 
-    fn snooze(&self, id: Uuid) {
+    fn snooze(self: &Rc<Self>, id: Uuid) {
+        if !self.flush_canvas() {
+            return;
+        }
         match self.service.snooze(id) {
             Ok(_) => self.after_mutation(),
             Err(error) => self.show_error(&error.to_string()),
         }
     }
 
-    fn delete_with_undo(self: &Rc<Self>, id: Uuid) {
+    fn delete_canvas_with_undo(self: &Rc<Self>, id: Uuid) {
+        if !self.flush_canvas() {
+            return;
+        }
+        match self.service.delete_canvas_entry(id) {
+            Ok(deleted) => self.show_deleted_canvas_undo(deleted),
+            Err(error) => self.show_error(&error.to_string()),
+        }
+    }
+
+    fn show_deleted_canvas_undo(self: &Rc<Self>, deleted: DeletedCanvasItem) {
+        self.after_mutation();
+        let toast = adw::Toast::new(&gettextrs::gettext("Canvas entry deleted"));
+        toast.set_button_label(Some(&gettextrs::gettext("Undo")));
+        let weak = Rc::downgrade(self);
+        toast.connect_button_clicked(move |_| {
+            if let Some(window) = weak.upgrade() {
+                if !window.flush_canvas() {
+                    return;
+                }
+                match window.service.restore_canvas_item(&deleted) {
+                    Ok(()) => window.after_mutation(),
+                    Err(error) => window.show_error(&error.to_string()),
+                }
+            }
+        });
+        self.widgets.toast_overlay.add_toast(toast);
+    }
+
+    fn delete_reminder_with_undo(self: &Rc<Self>, id: Uuid) {
+        if !self.flush_canvas() {
+            return;
+        }
+        let canvas_id = match self.service.list_canvas() {
+            Ok(items) => items
+                .into_iter()
+                .find(|item| item.entry.reminder_id == Some(id))
+                .map(|item| item.entry.id),
+            Err(error) => {
+                self.show_error(&error.to_string());
+                return;
+            }
+        };
+        if let Some(canvas_id) = canvas_id {
+            self.delete_canvas_with_undo(canvas_id);
+            return;
+        }
         match self.service.delete(id) {
             Ok(reminder) => {
                 self.after_mutation();
@@ -737,6 +1172,9 @@ impl MainWindow {
                 let weak = Rc::downgrade(self);
                 toast.connect_button_clicked(move |_| {
                     if let Some(window) = weak.upgrade() {
+                        if !window.flush_canvas() {
+                            return;
+                        }
                         match window.service.restore(&reminder) {
                             Ok(()) => window.after_mutation(),
                             Err(error) => window.show_error(&error.to_string()),
@@ -759,21 +1197,17 @@ impl MainWindow {
             .content_width(460)
             .content_height(520)
             .build();
-        let toolbar_view = adw::ToolbarView::new();
-        let header_bar = adw::HeaderBar::new();
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
         let title = gtk::Label::new(Some(&gettextrs::gettext("Edit Reminder")));
         title.add_css_class("title");
-        header_bar.set_title_widget(Some(&title));
+        header.set_title_widget(Some(&title));
         let cancel = gtk::Button::with_label(&gettextrs::gettext("Cancel"));
         let save = gtk::Button::with_label(&gettextrs::gettext("Save"));
         save.add_css_class("suggested-action");
-        header_bar.pack_start(&cancel);
-        header_bar.pack_end(&save);
-        toolbar_view.add_top_bar(&header_bar);
-
-        let scrolled = gtk::ScrolledWindow::new();
-        scrolled.set_hscrollbar_policy(gtk::PolicyType::Never);
-        let clamp = adw::Clamp::new();
+        header.pack_start(&cancel);
+        header.pack_end(&save);
+        toolbar.add_top_bar(&header);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
         content.set_margin_top(18);
         content.set_margin_bottom(18);
@@ -783,8 +1217,8 @@ impl MainWindow {
         entry.set_title(&gettextrs::gettext("Reminder message"));
         entry.set_max_length(280);
         entry.set_text(&reminder.message);
-        let message_group = adw::PreferencesGroup::new();
-        message_group.add(&entry);
+        let group = adw::PreferencesGroup::new();
+        group.add(&entry);
         let calendar = gtk::Calendar::new();
         if let Some(date) = glib_local_noon(local_due.date_naive()) {
             calendar.set_date(&date);
@@ -800,69 +1234,63 @@ impl MainWindow {
         time.append(&hour);
         time.append(&gtk::Label::new(Some(":")));
         time.append(&minute);
-        let error_label = gtk::Label::new(None);
-        error_label.set_visible(false);
-        error_label.set_halign(gtk::Align::Start);
-        error_label.set_wrap(true);
-        error_label.add_css_class("error");
-        content.append(&message_group);
+        let error = gtk::Label::new(None);
+        error.set_visible(false);
+        error.set_halign(gtk::Align::Start);
+        error.set_wrap(true);
+        error.add_css_class("error");
+        content.append(&group);
         content.append(&calendar);
         content.append(&time);
-        content.append(&error_label);
-        clamp.set_child(Some(&content));
-        scrolled.set_child(Some(&clamp));
-        toolbar_view.set_content(Some(&scrolled));
-        dialog.set_child(Some(&toolbar_view));
+        content.append(&error);
+        toolbar.set_content(Some(&content));
+        dialog.set_child(Some(&toolbar));
         dialog.set_default_widget(Some(&save));
         dialog.set_focus(Some(&entry));
-
-        let dialog_to_cancel = dialog.clone();
+        let cancel_dialog = dialog.downgrade();
         cancel.connect_clicked(move |_| {
-            dialog_to_cancel.close();
+            if let Some(dialog) = cancel_dialog.upgrade() {
+                dialog.close();
+            }
         });
-
-        let error_to_clear = error_label.clone();
-        entry.connect_changed(move |_| {
-            error_to_clear.set_visible(false);
-        });
-
         let weak = Rc::downgrade(self);
-        let dialog_to_save = dialog.clone();
+        let save_dialog = dialog.downgrade();
         save.connect_clicked(move |_| {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
+            let Some(window) = weak.upgrade() else { return };
             let selected = calendar.date();
             let Some(date) = NaiveDate::from_ymd_opt(
                 selected.year(),
                 selected.month() as u32,
                 selected.day_of_month() as u32,
             ) else {
-                error_label.set_label(&gettextrs::gettext("Choose a valid date"));
-                error_label.set_visible(true);
+                show_inline_error(&error, &gettextrs::gettext("Choose a valid date"));
                 return;
             };
             let Some(local) =
                 date.and_hms_opt(hour.value_as_int() as u32, minute.value_as_int() as u32, 0)
             else {
-                error_label.set_label(&gettextrs::gettext("Choose a valid time"));
-                error_label.set_visible(true);
+                show_inline_error(&error, &gettextrs::gettext("Choose a valid time"));
                 return;
             };
             let Ok(due_at) = resolve_local_datetime(&Local, local) else {
-                error_label.set_label(&gettextrs::gettext("Choose a valid local date and time"));
-                error_label.set_visible(true);
+                show_inline_error(
+                    &error,
+                    &gettextrs::gettext("Choose a valid local date and time"),
+                );
                 return;
             };
+            if !window.flush_canvas() {
+                return;
+            }
             match window.service.edit(id, &entry.text(), due_at) {
                 Ok(_) => {
-                    dialog_to_save.close();
+                    if let Some(dialog) = save_dialog.upgrade() {
+                        dialog.close();
+                    }
                     window.after_mutation();
                 }
-                Err(error) => {
-                    entry.add_css_class("error");
-                    error_label.set_label(&localized_service_error(&error));
-                    error_label.set_visible(true);
+                Err(problem) => {
+                    show_inline_error(&error, &localized_service_error(&problem));
                 }
             }
         });
@@ -882,6 +1310,9 @@ impl MainWindow {
         let weak = Rc::downgrade(self);
         dialog.connect_response(Some("clear"), move |_, _| {
             if let Some(window) = weak.upgrade() {
+                if !window.flush_canvas() {
+                    return;
+                }
                 match window.service.clear_history() {
                     Ok(_) => window.after_mutation(),
                     Err(error) => window.show_error(&error.to_string()),
@@ -891,8 +1322,92 @@ impl MainWindow {
         dialog.present(Some(&self.widgets.window));
     }
 
-    fn after_mutation(&self) {
-        self.refresh();
+    fn slot(&self, id: Option<Uuid>) -> Option<std::cell::Ref<'_, CanvasSlot>> {
+        std::cell::Ref::filter_map(self.slots.borrow(), |slots| {
+            slots.iter().find(|slot| slot.editor.entry_id == id)
+        })
+        .ok()
+    }
+
+    fn editor_for_entry(&self, id: Option<Uuid>) -> Option<Rc<CanvasEditor>> {
+        self.slots
+            .borrow()
+            .iter()
+            .find(|slot| slot.editor.entry_id == id)
+            .map(|slot| slot.editor.clone())
+    }
+
+    fn focus_after_rebuild(&self, previous: Option<(Option<Uuid>, i32)>, fallback_to_draft: bool) {
+        let requested = self.reminder_to_focus.take();
+        let slots = self.slots.borrow();
+        let target = slots
+            .iter()
+            .find(|slot| {
+                requested.is_some() && slot.editor.reminder_id == requested
+                    || requested.is_none()
+                        && previous.is_some_and(|(id, _)| slot.editor.entry_id == id)
+            })
+            .or_else(|| {
+                fallback_to_draft
+                    .then(|| slots.iter().find(|slot| slot.editor.entry_id.is_none()))
+                    .flatten()
+            })
+            .map(|slot| {
+                let offset = previous
+                    .filter(|(id, _)| *id == slot.editor.entry_id)
+                    .map_or(0, |(_, offset)| offset);
+                (slot.editor.input.clone(), offset)
+            });
+        if let Some((input, offset)) = target {
+            let restore = move |input: &gtk::TextView| {
+                input.grab_focus();
+                let buffer = input.buffer();
+                let offset = offset.clamp(0, buffer.char_count());
+                buffer.place_cursor(&buffer.iter_at_offset(offset));
+            };
+            restore(&input);
+            glib::idle_add_local_once(move || {
+                restore(&input);
+            });
+        }
+    }
+
+    fn focused_canvas_position(&self) -> Option<(Option<Uuid>, i32)> {
+        let focused = gtk::prelude::GtkWindowExt::focus(&self.widgets.window)?;
+        self.slots
+            .borrow()
+            .iter()
+            .find(|slot| slot.editor.input.upcast_ref::<gtk::Widget>() == &focused)
+            .map(|slot| {
+                (
+                    slot.editor.entry_id,
+                    slot.editor.input.buffer().cursor_position(),
+                )
+            })
+    }
+
+    fn focus_draft_later(&self) {
+        if let Some(editor) = self.editor_for_entry(None) {
+            glib::idle_add_local_once(move || {
+                editor.input.grab_focus();
+            });
+        }
+    }
+
+    fn update_placeholder(&self) {
+        let slots = self.slots.borrow();
+        let has_saved = slots.iter().any(|slot| slot.item.is_some());
+        let draft_empty = slots
+            .iter()
+            .find(|slot| slot.item.is_none())
+            .is_none_or(|slot| slot.editor.text().trim().is_empty());
+        self.widgets
+            .canvas_placeholder
+            .set_visible(!has_saved && draft_empty);
+    }
+
+    fn after_mutation(self: &Rc<Self>) {
+        self.refresh_views(None);
         (self.on_mutation)();
     }
 
@@ -901,6 +1416,35 @@ impl MainWindow {
             .toast_overlay
             .add_toast(adw::Toast::new(message));
     }
+}
+
+impl Drop for MainWindow {
+    fn drop(&mut self) {
+        let manager = adw::StyleManager::default();
+        for id in self.style_signal_ids.get_mut().drain(..) {
+            manager.disconnect(id);
+        }
+    }
+}
+
+fn committed_canvas_text(item: &CanvasItem, suffix: Option<&str>) -> String {
+    let message = escape_message(&item.entry.message);
+    suffix.map_or(message.clone(), |suffix| format!("{message} {suffix}"))
+}
+
+fn keeps_existing_suffix(
+    editor: &CanvasEditor,
+    text: &str,
+    span: Option<&std::ops::Range<usize>>,
+) -> bool {
+    editor
+        .committed_suffix()
+        .as_ref()
+        .is_some_and(|suffix| span.is_some_and(|span| text[span.clone()].trim() == suffix))
+}
+
+fn editor_key(id: Option<Uuid>) -> String {
+    id.map_or_else(|| "draft".to_owned(), |id| id.to_string())
 }
 
 fn clear_box(container: &gtk::Box) {
@@ -957,17 +1501,6 @@ fn localized_service_error(error: &ServiceError) -> String {
     }
 }
 
-fn default_schedule() -> ScheduleExpression {
-    ScheduleExpression::Relative(Duration::hours(1))
-}
-
-fn current_schedule(input: &str) -> ScheduleExpression {
-    match parse_english(input).status {
-        ScheduleParseStatus::Valid(schedule) => schedule,
-        _ => default_schedule(),
-    }
-}
-
 fn localized_schedule_parse_error(error: ScheduleParseError) -> String {
     match error {
         ScheduleParseError::Unsupported => gettextrs::gettext("I don't understand that schedule"),
@@ -992,14 +1525,14 @@ fn canonical_custom_phrase(date: NaiveDate, time: chrono::NaiveTime) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let (twelve_hour, suffix) = match time.hour() {
+    let (hour, suffix) = match time.hour() {
         0 => (12, "AM"),
         1..=11 => (time.hour(), "AM"),
         12 => (12, "PM"),
         hour => (hour - 12, "PM"),
     };
     format!(
-        "{} {} {} {twelve_hour}:{:02} {suffix}",
+        "{} {} {} {hour}:{:02} {suffix}",
         MONTHS[date.month0() as usize],
         date.day(),
         date.year(),
@@ -1009,9 +1542,9 @@ fn canonical_custom_phrase(date: NaiveDate, time: chrono::NaiveTime) -> String {
 
 fn localized_reminder_error(error: ReminderError) -> String {
     match error {
-        ReminderError::EmptyMessage => gettextrs::gettext("Enter a reminder message"),
+        ReminderError::EmptyMessage => gettextrs::gettext("Enter a note or reminder message"),
         ReminderError::MessageTooLong => {
-            gettextrs::gettext("Reminder messages can contain at most 280 characters")
+            gettextrs::gettext("Notes and reminder messages can contain at most 280 characters")
         }
         ReminderError::DueTimeNotFuture => gettextrs::gettext("Choose a time in the future"),
     }

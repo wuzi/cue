@@ -4,17 +4,17 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Remind Me</name>
-  <summary>Create quick reminders that notify you at the right time</summary>
+  <summary>Write notes and turn them into timely reminders</summary>
   <description>
     <p>
-      Remind Me is a focused reminder app for quick one-time notes. Write a
-      sentence with an optional English schedule such as “@tomorrow 9am”, and
-      receive an actionable desktop notification when it is due.
+      Remind Me is a focused scratchpad for quick notes and one-time reminders.
+      Write directly on the canvas, then add an English schedule such as
+      “@tomorrow 9am” when a note should notify you.
     </p>
     <p>
-      Reminders stay on your device. Complete or snooze them from the
-      notification, review upcoming reminders by day, and keep a local history
-      of completed items.
+      Notes and reminders stay on your device. Complete or snooze reminders
+      from the notification, review upcoming reminders by day, and keep a local
+      history of completed items.
     </p>
   </description>
   <developer id="io.github.wuzi">
@@ -33,7 +33,7 @@
   <releases>
     <release version="0.1.0" date="2026-08-15">
       <description>
-        <p>Initial release with local reminders, snoozing, and history.</p>
+        <p>Initial release with a local note canvas, reminders, snoozing, and history.</p>
       </description>
     </release>
   </releases>

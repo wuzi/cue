@@ -1,17 +1,17 @@
 use std::rc::Rc;
+use std::{cell::Cell, ops::Deref};
 
 use adw::prelude::*;
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use gio::prelude::ListModelExt;
 use remind_me::{
-    model::Reminder,
-    repository::{ReminderRepository, SqliteReminderRepository},
+    model::{CanvasEntry, DeletedCanvasItem, Reminder},
+    repository::{ReminderRepository, RepositoryError, SqliteReminderRepository},
     resources,
-    schedule::{ScheduleParseStatus, parse_english},
     scheduler::{Clock, NotificationError, ReminderNotifier},
     service::ReminderService,
     ui,
 };
+use uuid::Uuid;
 
 struct FixedClock(DateTime<Utc>);
 
@@ -31,8 +31,131 @@ impl ReminderNotifier for NoopNotifier {
     fn withdraw(&self, _id: &str) {}
 }
 
+struct FailingCanvasSaveRepository {
+    inner: SqliteReminderRepository,
+    fail_saves: Cell<bool>,
+}
+
+impl FailingCanvasSaveRepository {
+    fn in_memory() -> Self {
+        Self {
+            inner: SqliteReminderRepository::in_memory().unwrap(),
+            fail_saves: Cell::new(false),
+        }
+    }
+
+    fn set_fail_saves(&self, fail: bool) {
+        self.fail_saves.set(fail);
+    }
+}
+
+impl Deref for FailingCanvasSaveRepository {
+    type Target = SqliteReminderRepository;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+macro_rules! delegate_repository_method {
+    ($name:ident($($argument:ident: $type:ty),* $(,)?) -> $output:ty) => {
+        fn $name(&self, $($argument: $type),*) -> Result<$output, RepositoryError> {
+            self.inner.$name($($argument),*)
+        }
+    };
+}
+
+impl ReminderRepository for FailingCanvasSaveRepository {
+    delegate_repository_method!(insert(reminder: &Reminder) -> ());
+    delegate_repository_method!(restore(reminder: &Reminder) -> ());
+    delegate_repository_method!(get(id: Uuid) -> Reminder);
+    delegate_repository_method!(list_active() -> Vec<Reminder>);
+    delegate_repository_method!(list_history() -> Vec<Reminder>);
+    delegate_repository_method!(edit(
+        id: Uuid,
+        message: &str,
+        due_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Reminder);
+    delegate_repository_method!(mark_notified(id: Uuid, now: DateTime<Utc>) -> Reminder);
+    delegate_repository_method!(snooze(id: Uuid, now: DateTime<Utc>) -> Reminder);
+    delegate_repository_method!(snooze_canvas_reminder(
+        id: Uuid,
+        now: DateTime<Utc>,
+        working_text: Option<(Uuid, &str)>,
+    ) -> Reminder);
+    delegate_repository_method!(complete(id: Uuid, now: DateTime<Utc>) -> Reminder);
+    delegate_repository_method!(delete(id: Uuid) -> Reminder);
+    delegate_repository_method!(clear_history() -> usize);
+    delegate_repository_method!(list_canvas_entries() -> Vec<CanvasEntry>);
+    delegate_repository_method!(append_canvas_entry(
+        message: &str,
+        reminder: Option<&Reminder>,
+        now: DateTime<Utc>,
+    ) -> CanvasEntry);
+
+    fn save_canvas_working_text(
+        &self,
+        id: Uuid,
+        text: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), RepositoryError> {
+        if self.fail_saves.get() {
+            return Err(RepositoryError::Database(
+                rusqlite::Error::ExecuteReturnedResults,
+            ));
+        }
+        self.inner.save_canvas_working_text(id, text, now)
+    }
+
+    delegate_repository_method!(load_canvas_draft() -> String);
+
+    fn save_canvas_draft(&self, text: &str) -> Result<(), RepositoryError> {
+        if self.fail_saves.get() {
+            return Err(RepositoryError::Database(
+                rusqlite::Error::ExecuteReturnedResults,
+            ));
+        }
+        self.inner.save_canvas_draft(text)
+    }
+
+    delegate_repository_method!(get_canvas_entry(id: Uuid) -> CanvasEntry);
+    delegate_repository_method!(attach_canvas_reminder(
+        entry_id: Uuid,
+        reminder: &Reminder,
+        now: DateTime<Utc>,
+    ) -> CanvasEntry);
+    delegate_repository_method!(detach_canvas_reminder(
+        entry_id: Uuid,
+        message: &str,
+        now: DateTime<Utc>,
+    ) -> (CanvasEntry, Reminder));
+    delegate_repository_method!(complete_canvas_reminder(
+        reminder_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Reminder);
+    delegate_repository_method!(delete_canvas_entry(id: Uuid) -> DeletedCanvasItem);
+    delegate_repository_method!(restore_canvas_item(item: &DeletedCanvasItem) -> ());
+    delegate_repository_method!(update_canvas_note(
+        entry_id: Uuid,
+        message: &str,
+        now: DateTime<Utc>,
+    ) -> CanvasEntry);
+    delegate_repository_method!(rename_canvas_reminder(
+        entry_id: Uuid,
+        message: &str,
+        now: DateTime<Utc>,
+    ) -> (CanvasEntry, Reminder));
+    delegate_repository_method!(reschedule_canvas_reminder(
+        entry_id: Uuid,
+        message: &str,
+        due_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> (CanvasEntry, Reminder));
+}
+
 #[test]
-fn gtk_smoke_covers_layout_adaptation_and_input_preservation() {
+fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
     gtk::init().unwrap();
     adw::init().unwrap();
     resources::register().unwrap();
@@ -42,68 +165,25 @@ fn gtk_smoke_covers_layout_adaptation_and_input_preservation() {
     application.register(None::<&gio::Cancellable>).unwrap();
 
     let widgets = ui::build_window(&application).unwrap();
-
     assert_eq!(widgets.window.title().as_deref(), Some("Remind Me"));
-    assert_eq!(
-        widgets.navigation_view.visible_page_tag().as_deref(),
-        Some("reminders")
-    );
-    assert_eq!(widgets.composer_input.wrap_mode(), gtk::WrapMode::WordChar);
-    assert!(!widgets.composer_input.accepts_tab());
-    assert_eq!(
-        widgets.composer_placeholder.label(),
-        "What should I remind you about?"
-    );
-    assert_eq!(widgets.add_button.label(), None);
-    assert_eq!(
-        widgets.add_button.icon_name().as_deref(),
-        Some("list-add-symbolic")
-    );
-    assert_eq!(
-        widgets.add_button.tooltip_text().as_deref(),
-        Some("Add reminder")
-    );
-    assert!(widgets.add_button.has_css_class("circular"));
-    assert_eq!(widgets.schedule_preview.label(), "In 1 hour");
-    assert!(!widgets.composer_error.is_visible());
-    assert_eq!(
-        widgets.composer_error.accessible_role(),
-        gtk::AccessibleRole::Alert
-    );
     assert_eq!(widgets.window.default_width(), 560);
     assert_eq!(widgets.window.default_height(), 540);
+    assert_eq!(widgets.window.width_request(), 360);
+    assert_eq!(widgets.window.height_request(), 500);
     assert_eq!(
-        widgets.reminders_content.visible_child_name().as_deref(),
-        Some("empty")
+        widgets.navigation_view.visible_page_tag().as_deref(),
+        Some("canvas")
     );
-    assert!(!is_descendant_of(
-        widgets.composer_input.upcast_ref(),
-        widgets.reminders_scroller.upcast_ref()
-    ));
-    assert!(
-        find_label(
-            widgets.reminders_empty.upcast_ref(),
-            "Call Ada @tomorrow 9am"
-        )
-        .is_some()
+    assert_eq!(
+        widgets.active_list_button.icon_name().as_deref(),
+        Some("view-list-symbolic")
     );
-    assert!(
-        find_label(
-            widgets.reminders_empty.upcast_ref(),
-            "Take a break @in 30 minutes"
-        )
-        .is_some()
-    );
-
-    widgets.window.set_default_size(360, 500);
-    widgets.window.present();
-    drain_main_context();
-    assert!(!widgets.reminders_scroller.is_mapped());
-    widgets.window.close();
-    drain_main_context();
+    assert_eq!(widgets.canvas_placeholder.label(), "Write a note…");
+    assert!(find_icon_button(widgets.window.upcast_ref(), "list-add-symbolic").is_none());
+    assert!(find_css_class(widgets.window.upcast_ref(), "schedule-preview").is_none());
 
     let now = Utc.timestamp_opt(1_800_000_000, 0).single().unwrap();
-    let repository = Rc::new(SqliteReminderRepository::in_memory().unwrap());
+    let repository = Rc::new(FailingCanvasSaveRepository::in_memory());
     let service = Rc::new(ReminderService::new(
         repository.clone(),
         Rc::new(FixedClock(now)),
@@ -113,205 +193,236 @@ fn gtk_smoke_covers_layout_adaptation_and_input_preservation() {
     window.present();
     drain_main_context();
 
-    let message = find_descendant::<gtk::TextView>(window.widget().upcast_ref()).unwrap();
-    let preview = find_label(window.widget().upcast_ref(), "In 1 hour").unwrap();
-    message
-        .buffer()
-        .set_text("First line\nSecond line @in 15 minutes");
-    drain_main_context();
-    assert_eq!(
-        buffer_text(&message.buffer()),
-        "First line Second line @in 15 minutes"
-    );
-    message.grab_focus();
-    message.buffer().set_text("Walk @");
-    drain_main_context();
-    let suggestions = find_css_class(window.widget().upcast_ref(), "suggestions")
+    let draft = find_css_class(window.widget().upcast_ref(), "canvas-draft")
         .unwrap()
-        .downcast::<gtk::ListBox>()
+        .downcast::<gtk::TextView>()
         .unwrap();
-    assert_eq!(suggestions.selected_row().unwrap().index(), 0);
-    assert!(message.has_focus());
-    gtk::prelude::WidgetExt::activate_action(
-        window.widget(),
-        "win.use-suggestion",
-        Some(&"in 15 minutes".to_variant()),
-    )
-    .unwrap();
+    assert_eq!(draft.wrap_mode(), gtk::WrapMode::WordChar);
+    assert!(!draft.accepts_tab());
+    draft.buffer().set_text("A plain note");
+    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.commit-canvas", None).unwrap();
     drain_main_context();
-    assert_eq!(buffer_text(&message.buffer()), "Walk @in 15 minutes");
 
-    message.buffer().set_text("Call Ada @in 30 minutes");
+    let entries = repository.list_canvas_entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].message, "A plain note");
+    assert_eq!(entries[0].reminder_id, None);
+    assert_eq!(
+        find_all_css(window.widget().upcast_ref(), "canvas-entry").len(),
+        1
+    );
+    let draft = find_css_class(window.widget().upcast_ref(), "canvas-draft")
+        .unwrap()
+        .downcast::<gtk::TextView>()
+        .unwrap();
+    assert_eq!(buffer_text(&draft.buffer()), "");
+
+    let saved_note = find_text_view_containing(window.widget().upcast_ref(), "A plain note")
+        .expect("saved note editor");
+    saved_note.buffer().set_text("@garbage");
+    saved_note.grab_focus();
+    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.commit-canvas", None).unwrap();
     drain_main_context();
-    assert!(!preview.label().is_empty());
-    let schedule = message.buffer().iter_at_offset(10);
+    assert_eq!(repository.list_canvas_entries().unwrap().len(), 1);
+    assert_eq!(buffer_text(&saved_note.buffer()), "@garbage");
+    saved_note.buffer().set_text("A plain note edited");
+    saved_note
+        .buffer()
+        .place_cursor(&saved_note.buffer().iter_at_offset(6));
+    let old_draft = draft.downgrade();
+    let old_saved_note = saved_note.downgrade();
+    drop(draft);
+    drop(saved_note);
+    for _ in 0..20 {
+        window.refresh();
+        drain_main_context();
+        let focused =
+            find_text_view_containing(window.widget().upcast_ref(), "A plain note edited")
+                .expect("refreshed saved note editor");
+        assert!(window_focuses(window.widget(), focused.upcast_ref()));
+        assert_eq!(focused.buffer().cursor_position(), 6);
+    }
+    assert!(old_draft.upgrade().is_some());
+    assert!(old_saved_note.upgrade().is_some());
+    let saved_note = find_text_view_containing(window.widget().upcast_ref(), "A plain note edited")
+        .expect("refreshed saved note editor");
+    assert!(window_focuses(window.widget(), saved_note.upcast_ref()));
+    assert_eq!(saved_note.buffer().cursor_position(), 6);
+    assert_eq!(
+        repository.list_canvas_entries().unwrap()[0]
+            .working_text
+            .as_deref(),
+        Some("A plain note edited")
+    );
+    let active_list_button =
+        find_icon_button(window.widget().upcast_ref(), "view-list-symbolic").unwrap();
+    active_list_button.grab_focus();
+    window.refresh();
+    drain_main_context();
+    assert!(window_focuses(
+        window.widget(),
+        active_list_button.upcast_ref()
+    ));
+    saved_note.grab_focus();
+    saved_note.buffer().set_text("Survives a save failure");
+    saved_note
+        .buffer()
+        .place_cursor(&saved_note.buffer().iter_at_offset(8));
+    repository.set_fail_saves(true);
+    window.refresh();
+    drain_main_context();
+    assert_eq!(buffer_text(&saved_note.buffer()), "Survives a save failure");
+    assert!(window_focuses(window.widget(), saved_note.upcast_ref()));
+    assert_eq!(saved_note.buffer().cursor_position(), 8);
+    assert_eq!(
+        repository.list_canvas_entries().unwrap()[0]
+            .working_text
+            .as_deref(),
+        Some("A plain note edited")
+    );
+    repository.set_fail_saves(false);
+    window.refresh();
+    saved_note.buffer().set_text("A plain note edited");
+    window.refresh();
+    drain_main_context();
+    let draft = find_css_class(window.widget().upcast_ref(), "canvas-draft")
+        .unwrap()
+        .downcast::<gtk::TextView>()
+        .unwrap();
+    draft.grab_focus();
+
+    draft.buffer().set_text("Old task @2020-01-01 9am");
+    drain_main_context();
+    assert!(find_label_containing(window.widget().upcast_ref(), "future").is_some());
+    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.commit-canvas", None).unwrap();
+    drain_main_context();
+    assert_eq!(repository.list_canvas_entries().unwrap().len(), 1);
+    assert_eq!(buffer_text(&draft.buffer()), "Old task @2020-01-01 9am");
+
+    draft.buffer().set_text("Call Ada @in 30 minutes");
+    drain_main_context();
+    let draft_schedule = draft.buffer().iter_at_offset(10);
     assert!(
-        schedule
+        draft_schedule
             .tags()
             .iter()
-            .any(|tag| tag.name().as_deref() == Some("schedule"))
+            .any(|tag| tag.name().as_deref() == Some("draft-schedule"))
     );
-    find_icon_button(window.widget().upcast_ref(), "list-add-symbolic")
-        .unwrap()
-        .emit_clicked();
+    drop(draft);
+    drop(saved_note);
+    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.commit-canvas", None).unwrap();
     drain_main_context();
+    assert!(old_draft.upgrade().is_none());
+    assert!(old_saved_note.upgrade().is_none());
 
     let reminders = repository.list_active().unwrap();
+    let edited_note = repository
+        .list_canvas_entries()
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.reminder_id.is_none())
+        .unwrap();
+    assert_eq!(
+        edited_note.working_text.as_deref(),
+        Some("A plain note edited")
+    );
     assert_eq!(reminders.len(), 1);
     assert_eq!(reminders[0].message, "Call Ada");
     assert_eq!(reminders[0].due_at, now + Duration::minutes(30));
-    assert_eq!(buffer_text(&message.buffer()), "");
-    assert_eq!(preview.label(), "In 1 hour");
-    let content = find_descendant::<gtk::Stack>(window.widget().upcast_ref()).unwrap();
-    assert_eq!(content.visible_child_name().as_deref(), Some("list"));
-    assert!(find_descendant::<adw::PreferencesGroup>(content.upcast_ref()).is_none());
-    let saved_row = find_action_row(window.widget().upcast_ref(), "Call Ada").unwrap();
-    let touch_menu = find_descendant::<gtk::MenuButton>(saved_row.upcast_ref()).unwrap();
+    let registered = find_text_view_containing(window.widget().upcast_ref(), "Call Ada @").unwrap();
+    let schedule_offset = buffer_text(&registered.buffer()).find('@').unwrap() as i32;
     assert!(
-        touch_menu
-            .menu_model()
-            .is_some_and(|menu| menu.n_items() >= 3)
+        registered
+            .buffer()
+            .iter_at_offset(schedule_offset)
+            .tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some("registered-schedule"))
     );
-    let row_controls = find_css_class(saved_row.upcast_ref(), "row-controls").unwrap();
-    assert!(!row_controls.can_target());
-    saved_row.grab_focus();
+    let controls = find_css_class(
+        registered.parent().unwrap().upcast_ref(),
+        "canvas-entry-controls",
+    )
+    .unwrap();
+    assert!(!controls.can_target());
+    registered.grab_focus();
     drain_main_context();
-    assert!(row_controls.can_target());
-    message.grab_focus();
-    drain_main_context();
-    assert!(!row_controls.can_target());
+    assert!(controls.can_target());
 
-    message.buffer().set_text("Call Ada @someday");
-    drain_main_context();
-    let add = find_icon_button(window.widget().upcast_ref(), "list-add-symbolic").unwrap();
-    assert!(!add.is_sensitive());
-    assert_eq!(buffer_text(&message.buffer()), "Call Ada @someday");
-
-    message.buffer().set_text("Lunch @tomorrow noon");
-    drain_main_context();
-    let preview_button = find_css_class(window.widget().upcast_ref(), "schedule-preview")
-        .unwrap()
-        .downcast::<gtk::Button>()
-        .unwrap();
-    preview_button.emit_clicked();
-    drain_main_context();
-    let custom = find_calendar_popover(window.widget().upcast_ref()).unwrap();
-    let before_custom = buffer_text(&message.buffer());
-    find_descendant::<gtk::Calendar>(custom.upcast_ref())
-        .unwrap()
-        .set_date(&glib::DateTime::from_unix_local(1).unwrap());
-    find_button(custom.upcast_ref(), "Apply")
-        .unwrap()
-        .emit_clicked();
-    drain_main_context();
-    assert!(custom.parent().is_some());
-    assert!(
-        find_label(custom.upcast_ref(), "Choose a time in the future")
-            .is_some_and(|label| label.is_visible())
-    );
-    assert_eq!(buffer_text(&message.buffer()), before_custom);
-    find_button(custom.upcast_ref(), "Cancel")
-        .unwrap()
-        .emit_clicked();
-    drain_main_context();
-
-    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-history", None).unwrap();
-    drain_main_context();
-    let navigation = find_descendant::<adw::NavigationView>(window.widget().upcast_ref()).unwrap();
-    assert_eq!(navigation.visible_page_tag().as_deref(), Some("history"));
-    assert!(navigation.pop());
-    drain_main_context();
-    assert_eq!(navigation.visible_page_tag().as_deref(), Some("reminders"));
-
-    let custom_window = ui::MainWindow::new(&application, service.clone(), || {}, || {}).unwrap();
-    custom_window.present();
-    drain_main_context();
-    let custom_input =
-        find_descendant::<gtk::TextView>(custom_window.widget().upcast_ref()).unwrap();
-    custom_input.buffer().set_text("Plan @tomorrow noon");
-    drain_main_context();
-    find_css_class(custom_window.widget().upcast_ref(), "schedule-preview")
-        .unwrap()
-        .downcast::<gtk::Button>()
-        .unwrap()
-        .emit_clicked();
-    drain_main_context();
-    let custom = find_calendar_popover(custom_window.widget().upcast_ref()).unwrap();
-    find_button(custom.upcast_ref(), "Apply")
-        .unwrap()
-        .emit_clicked();
-    drain_main_context();
-    let applied = buffer_text(&custom_input.buffer());
-    assert!(applied.starts_with("Plan @"));
-    assert!(!applied.contains("tomorrow"));
-    assert!(matches!(
-        parse_english(&applied).status,
-        ScheduleParseStatus::Valid(_)
-    ));
-    custom_window.widget().close();
-    drain_main_context();
-
+    let old_registered_text = buffer_text(&registered.buffer()).to_string();
+    let old_suffix = &old_registered_text[old_registered_text.find('@').unwrap()..];
+    registered
+        .buffer()
+        .set_text(&format!("Call Ada changed {old_suffix}"));
     gtk::prelude::WidgetExt::activate_action(
         window.widget(),
-        "win.edit",
+        "win.snooze",
         Some(&reminders[0].id.to_string().to_variant()),
     )
     .unwrap();
     drain_main_context();
-    let dialog = window
-        .widget()
-        .dialogs()
-        .item(0)
+    let snoozed = repository.get(reminders[0].id).unwrap();
+    assert_eq!(snoozed.due_at, now + Duration::minutes(10));
+    let registered =
+        find_text_view_containing(window.widget().upcast_ref(), "Call Ada changed @").unwrap();
+    let snoozed_text = buffer_text(&registered.buffer()).to_string();
+    assert!(!snoozed_text.ends_with(old_suffix));
+    assert_eq!(
+        repository
+            .list_canvas_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.reminder_id == Some(reminders[0].id))
+            .unwrap()
+            .working_text
+            .as_deref(),
+        Some(snoozed_text.as_str())
+    );
+
+    let scheduled_entry = repository
+        .list_canvas_entries()
         .unwrap()
-        .downcast::<adw::Dialog>()
+        .into_iter()
+        .find(|entry| entry.reminder_id.is_some())
         .unwrap();
-    let entry = find_descendant::<adw::EntryRow>(dialog.upcast_ref()).unwrap();
-    let save = find_button(dialog.upcast_ref(), "Save").unwrap();
-    entry.set_text("");
-
-    save.emit_clicked();
+    window.show_reminder(reminders[0].id);
     drain_main_context();
+    let registered =
+        find_text_view_containing(window.widget().upcast_ref(), "Call Ada changed @").unwrap();
+    assert!(window_focuses(window.widget(), registered.upcast_ref()));
+    gtk::prelude::WidgetExt::activate_action(
+        window.widget(),
+        "win.custom-time",
+        Some(&scheduled_entry.id.to_string().to_variant()),
+    )
+    .unwrap();
+    drain_main_context();
+    assert!(find_calendar_popover(window.widget().upcast_ref()).is_some());
 
-    assert_eq!(window.widget().dialogs().n_items(), 1);
-    assert_eq!(entry.text(), "");
+    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-active-list", None)
+        .unwrap();
+    drain_main_context();
+    let navigation = find_descendant::<adw::NavigationView>(window.widget().upcast_ref()).unwrap();
+    assert_eq!(
+        navigation.visible_page_tag().as_deref(),
+        Some("active-list")
+    );
+    assert!(find_action_row(window.widget().upcast_ref(), "Call Ada").is_some());
+    assert!(navigation.pop());
+    gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-history", None).unwrap();
+    drain_main_context();
+    assert_eq!(navigation.visible_page_tag().as_deref(), Some("history"));
 }
 
-fn is_descendant_of(widget: &gtk::Widget, ancestor: &gtk::Widget) -> bool {
-    let mut parent = widget.parent();
-    while let Some(candidate) = parent {
-        if candidate == *ancestor {
-            return true;
-        }
-        parent = candidate.parent();
-    }
-    false
-}
-
-fn find_label(root: &gtk::Widget, label: &str) -> Option<gtk::Label> {
+fn find_text_view_containing(root: &gtk::Widget, needle: &str) -> Option<gtk::TextView> {
     let mut child = root.first_child();
     while let Some(widget) = child {
-        if let Ok(found) = widget.clone().downcast::<gtk::Label>()
-            && found.label() == label
+        if let Ok(view) = widget.clone().downcast::<gtk::TextView>()
+            && buffer_text(&view.buffer()).contains(needle)
         {
-            return Some(found);
+            return Some(view);
         }
-        if let Some(found) = find_label(&widget, label) {
-            return Some(found);
-        }
-        child = widget.next_sibling();
-    }
-    None
-}
-
-fn find_icon_button(root: &gtk::Widget, icon_name: &str) -> Option<gtk::Button> {
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Ok(button) = widget.clone().downcast::<gtk::Button>()
-            && button.icon_name().as_deref() == Some(icon_name)
-        {
-            return Some(button);
-        }
-        if let Some(found) = find_icon_button(&widget, icon_name) {
+        if let Some(found) = find_text_view_containing(&widget, needle) {
             return Some(found);
         }
         child = widget.next_sibling();
@@ -335,6 +446,38 @@ fn find_action_row(root: &gtk::Widget, title: &str) -> Option<adw::ActionRow> {
     None
 }
 
+fn find_label_containing(root: &gtk::Widget, needle: &str) -> Option<gtk::Label> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Ok(label) = widget.clone().downcast::<gtk::Label>()
+            && label.label().contains(needle)
+        {
+            return Some(label);
+        }
+        if let Some(found) = find_label_containing(&widget, needle) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn find_icon_button(root: &gtk::Widget, icon_name: &str) -> Option<gtk::Button> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Ok(button) = widget.clone().downcast::<gtk::Button>()
+            && button.icon_name().as_deref() == Some(icon_name)
+        {
+            return Some(button);
+        }
+        if let Some(found) = find_icon_button(&widget, icon_name) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 fn find_css_class(root: &gtk::Widget, css_class: &str) -> Option<gtk::Widget> {
     let mut child = root.first_child();
     while let Some(widget) = child {
@@ -349,8 +492,17 @@ fn find_css_class(root: &gtk::Widget, css_class: &str) -> Option<gtk::Widget> {
     None
 }
 
-fn buffer_text(buffer: &gtk::TextBuffer) -> glib::GString {
-    buffer.text(&buffer.start_iter(), &buffer.end_iter(), false)
+fn find_all_css(root: &gtk::Widget, css_class: &str) -> Vec<gtk::Widget> {
+    let mut found = Vec::new();
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if widget.has_css_class(css_class) {
+            found.push(widget.clone());
+        }
+        found.extend(find_all_css(&widget, css_class));
+        child = widget.next_sibling();
+    }
+    found
 }
 
 fn find_calendar_popover(root: &gtk::Widget) -> Option<gtk::Popover> {
@@ -369,6 +521,16 @@ fn find_calendar_popover(root: &gtk::Widget) -> Option<gtk::Popover> {
     None
 }
 
+fn buffer_text(buffer: &gtk::TextBuffer) -> glib::GString {
+    buffer.text(&buffer.start_iter(), &buffer.end_iter(), false)
+}
+
+fn window_focuses(window: &adw::ApplicationWindow, widget: &gtk::Widget) -> bool {
+    gtk::prelude::GtkWindowExt::focus(window)
+        .as_ref()
+        .is_some_and(|focused| focused == widget)
+}
+
 fn drain_main_context() {
     while glib::MainContext::default().iteration(false) {}
 }
@@ -383,22 +545,6 @@ where
             return Some(found);
         }
         if let Some(found) = find_descendant::<T>(&widget) {
-            return Some(found);
-        }
-        child = widget.next_sibling();
-    }
-    None
-}
-
-fn find_button(root: &gtk::Widget, label: &str) -> Option<gtk::Button> {
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Ok(button) = widget.clone().downcast::<gtk::Button>()
-            && button.label().as_deref() == Some(label)
-        {
-            return Some(button);
-        }
-        if let Some(found) = find_button(&widget, label) {
             return Some(found);
         }
         child = widget.next_sibling();

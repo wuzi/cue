@@ -3,14 +3,16 @@ use std::{
     rc::Rc,
 };
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use remind_me::{
-    model::{NewReminder, Reminder},
+    canvas::format_schedule_suffix,
+    model::{CanvasSchedule, NewReminder, Reminder},
     repository::{ReminderRepository, SqliteReminderRepository},
     schedule::{DaySpec, ScheduleError, ScheduleExpression},
     scheduler::{Clock, NotificationError, ReminderNotifier, stable_notification_id},
     service::{ActionOutcome, ReminderService},
+    time_utils::ClockFormat,
 };
 
 fn at(timestamp: i64) -> DateTime<Utc> {
@@ -76,6 +78,109 @@ fn create_service(
     let notifier = Rc::new(RecordingNotifier::default());
     let service = ReminderService::new(repository.clone(), clock.clone(), notifier.clone());
     (repository, clock, notifier, service)
+}
+
+#[test]
+fn canvas_draft_commits_plain_note_and_clears_restored_text() {
+    let now = at(1_800_000_000);
+    let (repository, _, _, service) = create_service(now);
+    service.save_canvas_draft("unfinished").unwrap();
+
+    let item = service
+        .commit_canvas_draft("A plain note", CanvasSchedule::None, &Utc)
+        .unwrap();
+
+    assert_eq!(item.entry.message, "A plain note");
+    assert_eq!(item.entry.reminder_id, None);
+    assert_eq!(item.reminder, None);
+    assert_eq!(service.load_canvas_draft().unwrap(), "");
+    assert!(repository.list_active().unwrap().is_empty());
+}
+
+#[test]
+fn canvas_note_upgrades_and_downgrades_without_losing_its_position() {
+    let now = at(1_800_000_000);
+    let (_, clock, notifier, service) = create_service(now);
+    let note = service
+        .commit_canvas_draft("Call Ada", CanvasSchedule::None, &Utc)
+        .unwrap();
+    let position = note.entry.position;
+
+    let upgraded = service
+        .commit_canvas_edit(
+            note.entry.id,
+            "Call Ada",
+            CanvasSchedule::Replace(ScheduleExpression::Relative(Duration::hours(1))),
+            &Utc,
+        )
+        .unwrap();
+    assert_eq!(upgraded.entry.position, position);
+    assert_eq!(
+        upgraded.reminder.as_ref().unwrap().due_at,
+        now + Duration::hours(1)
+    );
+
+    clock.set(now + Duration::minutes(1));
+    let downgraded = service
+        .commit_canvas_edit(note.entry.id, "Call Ada later", CanvasSchedule::None, &Utc)
+        .unwrap();
+    assert_eq!(downgraded.entry.position, position);
+    assert_eq!(downgraded.entry.reminder_id, None);
+    assert_eq!(downgraded.reminder, None);
+    assert_eq!(notifier.withdrawn.borrow().len(), 1);
+    assert_eq!(service.next_due().unwrap(), None);
+}
+
+#[test]
+fn message_only_canvas_edit_keeps_overdue_delivery_metadata() {
+    let now = at(1_800_000_000);
+    let (repository, clock, _, service) = create_service(now);
+    let item = service
+        .commit_canvas_draft(
+            "Call Ada",
+            CanvasSchedule::Replace(ScheduleExpression::Relative(Duration::minutes(1))),
+            &Utc,
+        )
+        .unwrap();
+    let reminder = item.reminder.unwrap();
+    clock.set(now + Duration::minutes(2));
+    service.refresh().unwrap();
+    let delivered = repository.get(reminder.id).unwrap();
+
+    let edited = service
+        .commit_canvas_edit(
+            item.entry.id,
+            "Call Ada with notes",
+            CanvasSchedule::KeepExisting,
+            &Utc,
+        )
+        .unwrap();
+    let edited_reminder = edited.reminder.unwrap();
+    assert_eq!(edited_reminder.due_at, delivered.due_at);
+    assert_eq!(edited_reminder.notified_at, delivered.notified_at);
+    assert_eq!(edited_reminder.message, "Call Ada with notes");
+}
+
+#[test]
+fn canvas_working_text_restores_until_commit_or_discard() {
+    let now = at(1_800_000_000);
+    let (_, _, _, service) = create_service(now);
+    let note = service
+        .commit_canvas_draft("First version", CanvasSchedule::None, &Utc)
+        .unwrap();
+
+    service
+        .save_canvas_working_text(note.entry.id, Some("unfinished @tom"))
+        .unwrap();
+    assert_eq!(
+        service.list_canvas().unwrap()[0]
+            .entry
+            .working_text
+            .as_deref(),
+        Some("unfinished @tom")
+    );
+    service.discard_canvas_working_text(note.entry.id).unwrap();
+    assert_eq!(service.list_canvas().unwrap()[0].entry.working_text, None);
 }
 
 #[test]
@@ -217,6 +322,29 @@ fn completing_a_delivered_reminder_withdraws_notification_and_releases_hold() {
 }
 
 #[test]
+fn notification_done_removes_linked_canvas_entry_and_keeps_history() {
+    let now = at(1_800_000_000);
+    let (_, clock, _, service) = create_service(now);
+    let item = service
+        .commit_canvas_draft(
+            "Call Ada",
+            CanvasSchedule::Replace(ScheduleExpression::Relative(Duration::minutes(1))),
+            &Utc,
+        )
+        .unwrap();
+    let reminder = item.reminder.unwrap();
+    clock.set(now + Duration::minutes(2));
+    service.refresh().unwrap();
+
+    assert_eq!(
+        service.complete_target(&reminder.id.to_string()).unwrap(),
+        ActionOutcome::Applied
+    );
+    assert!(service.list_canvas().unwrap().is_empty());
+    assert_eq!(service.list_history().unwrap().len(), 1);
+}
+
+#[test]
 fn snooze_withdraws_current_notification_and_schedules_ten_minutes() {
     let now = at(1_800_000_000);
     let (_, clock, notifier, service) = create_service(now);
@@ -232,6 +360,34 @@ fn snooze_withdraws_current_notification_and_schedules_ten_minutes() {
     assert_eq!(snoozed.due_at, fired_at + Duration::minutes(10));
     assert_eq!(snoozed.notified_at, None);
     assert_eq!(notifier.withdrawn.borrow().len(), 1);
+}
+
+#[test]
+fn snooze_atomically_refreshes_a_linked_dirty_canonical_suffix() {
+    let now = at(1_800_000_000);
+    let (repository, _, _, service) = create_service(now);
+    let item = service
+        .commit_canvas_draft(
+            "Call Ada",
+            CanvasSchedule::Replace(ScheduleExpression::Relative(Duration::minutes(30))),
+            &Utc,
+        )
+        .unwrap();
+    let reminder = item.reminder.unwrap();
+    let previous = format_schedule_suffix(reminder.due_at, now, &Local, ClockFormat::TwelveHour);
+    service
+        .save_canvas_working_text(item.entry.id, Some(&format!("Call Ada changed {previous}")))
+        .unwrap();
+
+    let snoozed = service.snooze(reminder.id).unwrap();
+    let expected = format!(
+        "Call Ada changed {}",
+        format_schedule_suffix(snoozed.due_at, now, &Local, ClockFormat::TwelveHour)
+    );
+    let entry = repository.get_canvas_entry(item.entry.id).unwrap();
+
+    assert_eq!(entry.working_text.as_deref(), Some(expected.as_str()));
+    assert_eq!(snoozed.due_at, now + Duration::minutes(10));
 }
 
 #[test]

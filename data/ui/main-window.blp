@@ -10,13 +10,24 @@ Adw.ApplicationWindow main_window {
 
   content: Adw.ToastOverlay toast_overlay {
     child: Adw.NavigationView navigation_view {
-      Adw.NavigationPage reminders_page {
+      Adw.NavigationPage canvas_page {
         title: _("Remind Me");
-        tag: "reminders";
+        tag: "canvas";
 
         child: Adw.ToolbarView {
           [top]
           Adw.HeaderBar {
+            [start]
+            Gtk.Button active_list_button {
+              icon-name: "view-list-symbolic";
+              tooltip-text: _("Active Reminders");
+              styles ["flat"]
+
+              accessibility {
+                label: _("Active Reminders");
+              }
+            }
+
             title-widget: Gtk.Label {
               label: _("Remind Me");
               styles ["title"]
@@ -30,183 +41,81 @@ Adw.ApplicationWindow main_window {
             }
           }
 
-          content: Gtk.Box {
-            orientation: vertical;
+          content: Gtk.ScrolledWindow canvas_scroller {
+            hscrollbar-policy: never;
 
-            Adw.Clamp {
-              maximum-size: 560;
-              tightening-threshold: 500;
+            child: Adw.Clamp {
+              maximum-size: 720;
+              tightening-threshold: 480;
 
-              child: Gtk.Box {
-                orientation: vertical;
-                spacing: 6;
-                margin-top: 12;
-                margin-bottom: 12;
-                margin-start: 12;
-                margin-end: 12;
-
-                Gtk.Box composer_card {
+              child: Gtk.Overlay {
+                child: Gtk.Box canvas_entries {
                   orientation: vertical;
-                  styles ["card"]
+                  spacing: 2;
+                  vexpand: true;
+                  margin-top: 18;
+                  margin-bottom: 24;
+                  margin-start: 20;
+                  margin-end: 20;
+                };
 
-                  Gtk.Box {
-                    spacing: 6;
-                    margin-top: 6;
-                    margin-bottom: 6;
-                    margin-start: 10;
-                    margin-end: 6;
-
-                    Gtk.Overlay {
-                      hexpand: true;
-                      child: Gtk.ScrolledWindow {
-                        hscrollbar-policy: never;
-                        vscrollbar-policy: automatic;
-                        propagate-natural-height: true;
-                        min-content-height: 42;
-                        max-content-height: 90;
-
-                        child: Gtk.TextView composer_input {
-                          wrap-mode: word_char;
-                          accepts-tab: false;
-                          top-margin: 8;
-                          bottom-margin: 8;
-                          left-margin: 2;
-                          right-margin: 2;
-                          styles ["composer-input"]
-
-                          accessibility {
-                            label: _("Reminder sentence");
-                            description: _("Write what to remember, followed by an optional schedule beginning with at sign");
-                          }
-                        };
-                      };
-
-                      [overlay]
-                      Gtk.Label composer_placeholder {
-                        label: _("What should I remind you about?");
-                        halign: start;
-                        valign: start;
-                        margin-top: 8;
-                        margin-start: 2;
-                        can-target: false;
-                        styles ["dim-label"]
-                      }
-                    }
-
-                    Gtk.Button add_button {
-                      valign: center;
-                      icon-name: "list-add-symbolic";
-                      tooltip-text: _("Add reminder");
-                      styles ["suggested-action", "circular"]
-
-                      accessibility {
-                        label: _("Add reminder");
-                      }
-                    }
-                  }
-
-                  Gtk.Separator {}
-
-                  Gtk.Button preview_button {
-                    halign: fill;
-                    styles ["flat", "schedule-preview"]
-                    tooltip-text: _("Choose a custom date and time");
-
-                    accessibility {
-                      label: _("Reminder time");
-                      description: _("In 1 hour");
-                    }
-
-                    child: Gtk.Box {
-                      spacing: 6;
-
-                      Gtk.Image {
-                        icon-name: "alarm-symbolic";
-                        accessible-role: presentation;
-                      }
-
-                      Gtk.Label schedule_preview {
-                        label: _("In 1 hour");
-                        xalign: 0;
-                        hexpand: true;
-                        ellipsize: end;
-                        styles ["dim-label", "caption"]
-                      }
-
-                      Gtk.Image {
-                        icon-name: "pan-down-symbolic";
-                        accessible-role: presentation;
-                      }
-                    };
-                  }
-                }
-
-                Gtk.Label composer_error {
-                  visible: false;
-                  accessible-role: alert;
+                [overlay]
+                Gtk.Label canvas_placeholder {
+                  label: _("Write a note…");
                   halign: start;
-                  xalign: 0;
-                  wrap: true;
-                  margin-start: 6;
-                  margin-end: 6;
-                  styles ["error", "caption"]
+                  valign: start;
+                  margin-top: 28;
+                  margin-start: 28;
+                  can-target: false;
+                  styles ["dim-label"]
                 }
+              };
+            };
+          };
+        };
+      }
+
+      Adw.NavigationPage active_list_page {
+        title: _("Active Reminders");
+        tag: "active-list";
+
+        child: Adw.ToolbarView {
+          [top]
+          Adw.HeaderBar {}
+
+          content: Gtk.Stack active_content {
+            transition-type: crossfade;
+
+            Gtk.StackPage {
+              name: "empty";
+
+              child: Adw.StatusPage active_empty {
+                icon-name: "alarm-symbolic";
+                title: _("No Active Reminders");
+                description: _("Add an @schedule to a canvas note to create one.");
               };
             }
 
-            Gtk.Stack reminders_content {
-              vexpand: true;
-              transition-type: crossfade;
+            Gtk.StackPage {
+              name: "list";
 
-              Gtk.StackPage {
-                name: "empty";
+              child: Gtk.ScrolledWindow {
+                hscrollbar-policy: never;
 
-                child: Gtk.Box reminders_empty {
-                  orientation: vertical;
-                  spacing: 8;
-                  valign: center;
-                  halign: center;
-                  margin-start: 24;
-                  margin-end: 24;
+                child: Adw.Clamp {
+                  maximum-size: 560;
+                  tightening-threshold: 500;
 
-                  Gtk.Label {
-                    label: _("Try something like");
-                    styles ["dim-label", "caption-heading"]
-                  }
-
-                  Gtk.Label composer_example_tomorrow {
-                    selectable: true;
-                    styles ["dim-label", "monospace"]
-                  }
-
-                  Gtk.Label composer_example_relative {
-                    selectable: true;
-                    styles ["dim-label", "monospace"]
-                  }
-                };
-              }
-
-              Gtk.StackPage {
-                name: "list";
-
-                child: Gtk.ScrolledWindow reminders_scroller {
-                  hscrollbar-policy: never;
-
-                  child: Adw.Clamp {
-                    maximum-size: 560;
-                    tightening-threshold: 500;
-
-                    child: Gtk.Box active_groups {
-                      orientation: vertical;
-                      spacing: 14;
-                      margin-top: 8;
-                      margin-bottom: 12;
-                      margin-start: 12;
-                      margin-end: 12;
-                    };
+                  child: Gtk.Box active_groups {
+                    orientation: vertical;
+                    spacing: 14;
+                    margin-top: 12;
+                    margin-bottom: 12;
+                    margin-start: 12;
+                    margin-end: 12;
                   };
                 };
-              }
+              };
             }
           };
         };
