@@ -24,7 +24,7 @@
   <url type="bugtracker">https://github.com/wuzi/cue/issues</url>
   <screenshots>
     <screenshot type="default">
-      <image type="source" width="610" height="590">https://raw.githubusercontent.com/wuzi/cue/v0.1.0/data/screenshots/cue.png</image>
+      <image type="source" width="610" height="590">https://raw.githubusercontent.com/wuzi/cue/v0.2.0/data/screenshots/cue.png</image>
       <caption>Write notes and schedule reminders on the same canvas</caption>
     </screenshot>
   </screenshots>
@@ -37,6 +37,11 @@
   </categories>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.0" date="2026-08-15">
+      <description>
+        <p>Added notification sounds and improved reminder state handling.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-15">
       <description>
         <p>Initial release with a local note canvas, reminders, snoozing, and history.</p>
