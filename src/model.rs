@@ -68,6 +68,12 @@ pub struct CanvasItem {
     pub reminder: Option<Reminder>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleState {
+    pub has_active: bool,
+    pub next_due: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanvasSchedule {
     None,

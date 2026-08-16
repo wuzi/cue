@@ -93,14 +93,6 @@ pub fn active_reminder_row(reminder: &Reminder, overdue: bool, due: &str) -> adw
     row
 }
 
-pub fn history_row(reminder: &Reminder, completed: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title(&reminder.message);
-    row.set_subtitle(completed);
-    row.add_css_class("reminder-row");
-    row
-}
-
 fn reminder_menu(id: Uuid, overdue: bool) -> gio::Menu {
     let menu = gio::Menu::new();
     let target = id.to_string().to_variant();

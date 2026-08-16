@@ -47,6 +47,18 @@ struct SuggestionMenu {
     anchor_tick: gtk::TickCallbackId,
 }
 
+#[derive(Debug)]
+struct HistoryRowData {
+    title: String,
+    subtitle: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TemporalFingerprint {
+    local_date: NaiveDate,
+    utc_offset_seconds: i32,
+}
+
 const SUGGESTIONS: [Option<&str>; 6] = [
     Some("in 15 minutes"),
     Some("in 30 minutes"),
@@ -60,7 +72,13 @@ pub struct MainWindow {
     widgets: WindowWidgets,
     service: Rc<ReminderService>,
     slots: RefCell<Vec<CanvasSlot>>,
-    autosaves: RefCell<HashMap<String, glib::SourceId>>,
+    autosaves: RefCell<HashMap<Option<Uuid>, glib::SourceId>>,
+    history_store: gio::ListStore,
+    active_stale: Cell<bool>,
+    history_stale: Cell<bool>,
+    clock_settings: Option<gio::Settings>,
+    clock_format: Cell<ClockFormat>,
+    temporal_fingerprint: Cell<TemporalFingerprint>,
     reminder_to_focus: Cell<Option<Uuid>>,
     suggestions: RefCell<Option<SuggestionMenu>>,
     custom_popover: RefCell<Option<Rc<SchedulePicker>>>,
@@ -76,11 +94,20 @@ impl MainWindow {
         on_mutation: impl Fn() + 'static,
         on_closed: impl Fn() + 'static,
     ) -> Result<Rc<Self>, UiBuildError> {
+        let clock_settings = system_clock_settings();
+        let clock_format = clock_format_from_settings(clock_settings.as_ref());
+        let temporal_fingerprint = temporal_fingerprint(service.now());
         let window = Rc::new(Self {
             widgets: build_window(application)?,
             service,
             slots: RefCell::new(Vec::new()),
             autosaves: RefCell::new(HashMap::new()),
+            history_store: gio::ListStore::new::<glib::BoxedAnyObject>(),
+            active_stale: Cell::new(true),
+            history_stale: Cell::new(true),
+            clock_settings,
+            clock_format: Cell::new(clock_format),
+            temporal_fingerprint: Cell::new(temporal_fingerprint),
             reminder_to_focus: Cell::new(None),
             suggestions: RefCell::new(None),
             custom_popover: RefCell::new(None),
@@ -90,7 +117,9 @@ impl MainWindow {
         });
         window.install_menu();
         window.install_window_actions();
+        window.install_history_list();
         window.connect_signals();
+        window.connect_clock_format();
         window.connect_appearance();
         window.refresh();
         Ok(window)
@@ -131,16 +160,58 @@ impl MainWindow {
         self.refresh_views(focus);
     }
 
+    pub fn scheduler_refresh(self: &Rc<Self>, delivered: bool, scheduler_failed: bool) {
+        let temporal_changed = self.refresh_temporal_views(false);
+        if delivered || scheduler_failed {
+            self.active_stale.set(true);
+        }
+        if temporal_changed || delivered || scheduler_failed {
+            self.refresh_visible_secondary();
+        }
+    }
+
     fn refresh_views(self: &Rc<Self>, focus: Option<(Option<Uuid>, i32)>) {
         self.refresh_canvas(focus);
-        match self.service.list_active() {
-            Ok(reminders) => self.rebuild_active(reminders),
-            Err(error) => self.show_error(&error.to_string()),
+        self.active_stale.set(true);
+        self.history_stale.set(true);
+        self.refresh_visible_secondary();
+    }
+
+    fn refresh_visible_secondary(&self) {
+        match self.widgets.navigation_view.visible_page_tag().as_deref() {
+            Some("active-list") if self.active_stale.replace(false) => {
+                match self.service.list_active() {
+                    Ok(reminders) => self.rebuild_active(reminders),
+                    Err(error) => {
+                        self.active_stale.set(true);
+                        self.show_error(&error.to_string());
+                    }
+                }
+            }
+            Some("history") if self.history_stale.replace(false) => {
+                match self.service.list_history() {
+                    Ok(history) => self.rebuild_history(history),
+                    Err(error) => {
+                        self.history_stale.set(true);
+                        self.show_error(&error.to_string());
+                    }
+                }
+            }
+            _ => {}
         }
-        match self.service.list_history() {
-            Ok(history) => self.rebuild_history(history),
-            Err(error) => self.show_error(&error.to_string()),
+    }
+
+    fn refresh_temporal_views(self: &Rc<Self>, force: bool) -> bool {
+        let fingerprint = temporal_fingerprint(self.service.now());
+        if !force && self.temporal_fingerprint.get() == fingerprint {
+            return false;
         }
+        self.temporal_fingerprint.set(fingerprint);
+        let focus = self.focused_canvas_position();
+        self.refresh_canvas(focus);
+        self.active_stale.set(true);
+        self.history_stale.set(true);
+        true
     }
 
     pub fn confirm_quit(&self, application: &adw::Application) {
@@ -187,6 +258,77 @@ impl MainWindow {
         menu.append(Some(&gettextrs::gettext("About Cue")), Some("app.about"));
         menu.append(Some(&gettextrs::gettext("Quit")), Some("app.quit"));
         self.widgets.menu_button.set_menu_model(Some(&menu));
+    }
+
+    fn install_history_list(&self) {
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            let item = item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("history factory receives list items");
+            let row = adw::ActionRow::new();
+            row.add_css_class("reminder-row");
+            item.set_child(Some(&row));
+        });
+        factory.connect_bind(|_, item| {
+            let item = item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("history factory receives list items");
+            let Some(data) = item.item().and_downcast::<glib::BoxedAnyObject>() else {
+                return;
+            };
+            let Some(row) = item.child().and_downcast::<adw::ActionRow>() else {
+                return;
+            };
+            let data = data.borrow::<HistoryRowData>();
+            row.set_title(&data.title);
+            row.set_subtitle(&data.subtitle);
+        });
+        factory.connect_unbind(|_, item| {
+            let item = item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("history factory receives list items");
+            if let Some(row) = item.child().and_downcast::<adw::ActionRow>() {
+                row.set_title("");
+                row.set_subtitle("");
+            }
+        });
+        let header_factory = gtk::SignalListItemFactory::new();
+        header_factory.connect_setup(|_, header| {
+            let header = header
+                .downcast_ref::<gtk::ListHeader>()
+                .expect("history header factory receives list headers");
+            let label = gtk::Label::new(Some(&gettextrs::gettext("Completed")));
+            label.set_halign(gtk::Align::Start);
+            label.set_margin_start(8);
+            label.set_margin_bottom(4);
+            label.add_css_class("caption-heading");
+            label.add_css_class("dim-label");
+            header.set_child(Some(&label));
+        });
+        let selection = gtk::NoSelection::new(Some(self.history_store.clone()));
+        self.widgets.history_list.set_factory(Some(&factory));
+        self.widgets
+            .history_list
+            .set_header_factory(Some(&header_factory));
+        self.widgets.history_list.set_model(Some(&selection));
+    }
+
+    fn connect_clock_format(self: &Rc<Self>) {
+        let Some(settings) = self.clock_settings.as_ref() else {
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        settings.connect_changed(Some("clock-format"), move |settings, _| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let format = clock_format_from_settings(Some(settings));
+            if window.clock_format.replace(format) != format {
+                window.refresh_temporal_views(true);
+                window.refresh_visible_secondary();
+            }
+        });
     }
 
     fn install_window_actions(self: &Rc<Self>) {
@@ -245,6 +387,14 @@ impl MainWindow {
     }
 
     fn connect_signals(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.widgets
+            .navigation_view
+            .connect_visible_page_tag_notify(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    window.refresh_visible_secondary();
+                }
+            });
         let weak = Rc::downgrade(self);
         self.widgets.active_list_button.connect_clicked(move |_| {
             if let Some(window) = weak.upgrade() {
@@ -321,7 +471,7 @@ impl MainWindow {
         }
 
         let now = self.service.now();
-        let clock_format = system_clock_format();
+        let clock_format = self.clock_format.get();
         let mut updates = Vec::with_capacity(items.len());
         {
             let mut slots = self.slots.borrow_mut();
@@ -329,60 +479,79 @@ impl MainWindow {
                 let old_text = slot.editor.text();
                 let old_committed = slot.committed_text.clone();
                 let old_suffix = slot.editor.committed_suffix();
+                let was_dirty = slot.editor.is_dirty();
                 let suffix = item.reminder.as_ref().map(|reminder| {
                     format_schedule_suffix(reminder.due_at, now, &Local, clock_format)
                 });
                 let committed_text = committed_canvas_text(&item, suffix.as_deref());
-                let visible_text = item.entry.working_text.as_deref().map_or_else(
-                    || committed_text.clone(),
-                    |working| {
-                        if old_text != old_committed {
-                            match (old_suffix.as_deref(), suffix.as_deref()) {
-                                (Some(previous), Some(current)) => {
-                                    normalize_registered_suffix(&old_text, previous, current)
-                                }
-                                _ => old_text.clone(),
-                            }
-                        } else {
-                            item.reminder.as_ref().map_or_else(
-                                || working.to_owned(),
-                                |reminder| {
-                                    normalize_stored_working_suffix(
-                                        working,
-                                        reminder.due_at,
-                                        item.entry.updated_at,
-                                        now,
-                                        &Local,
-                                        clock_format,
-                                    )
-                                },
-                            )
+                let visible_text = if was_dirty {
+                    match (old_suffix.as_deref(), suffix.as_deref()) {
+                        (Some(previous), Some(current)) => {
+                            normalize_registered_suffix(&old_text, previous, current)
                         }
-                    },
-                );
-                let needs_persist = item
-                    .entry
-                    .working_text
-                    .as_deref()
-                    .is_some_and(|working| working != visible_text);
+                        _ => old_text.clone(),
+                    }
+                } else {
+                    item.entry.working_text.as_deref().map_or_else(
+                        || committed_text.clone(),
+                        |working| {
+                            if old_text != old_committed {
+                                match (old_suffix.as_deref(), suffix.as_deref()) {
+                                    (Some(previous), Some(current)) => {
+                                        normalize_registered_suffix(&old_text, previous, current)
+                                    }
+                                    _ => old_text.clone(),
+                                }
+                            } else {
+                                item.reminder.as_ref().map_or_else(
+                                    || working.to_owned(),
+                                    |reminder| {
+                                        normalize_stored_working_suffix(
+                                            working,
+                                            reminder.due_at,
+                                            item.entry.updated_at,
+                                            now,
+                                            &Local,
+                                            clock_format,
+                                        )
+                                    },
+                                )
+                            }
+                        },
+                    )
+                };
+                let normalized_stored_text = !was_dirty
+                    && item
+                        .entry
+                        .working_text
+                        .as_deref()
+                        .is_some_and(|working| working != visible_text);
                 slot.item = Some(item);
                 slot.committed_text = committed_text;
                 slot.editor.set_committed_suffix(suffix);
-                updates.push((slot.editor.clone(), visible_text, needs_persist));
+                updates.push((
+                    slot.editor.clone(),
+                    visible_text,
+                    normalized_stored_text,
+                    was_dirty,
+                ));
             }
         }
 
-        for (editor, text, needs_persist) in updates {
+        for (editor, text, normalized_stored_text, was_dirty) in updates {
             if editor.text() != text {
                 let cursor = editor.input.buffer().cursor_position();
-                editor.input.buffer().set_text(&text);
+                editor.set_text_from_model(&text);
                 let buffer = editor.input.buffer();
                 let cursor = cursor.clamp(0, buffer.char_count());
                 buffer.place_cursor(&buffer.iter_at_offset(cursor));
             }
             self.update_editor(&editor);
-            if needs_persist {
+            if normalized_stored_text {
+                editor.mark_dirty();
                 let _ = self.flush_editor(&editor);
+            } else if !was_dirty {
+                editor.mark_clean();
             }
         }
         true
@@ -394,15 +563,13 @@ impl MainWindow {
         self.dismiss_custom_popover();
         clear_box(&self.widgets.canvas_entries);
         self.slots.borrow_mut().clear();
+        let now = self.service.now();
+        let clock_format = self.clock_format.get();
         for item in items {
-            let suffix = item.reminder.as_ref().map(|reminder| {
-                format_schedule_suffix(
-                    reminder.due_at,
-                    self.service.now(),
-                    &Local,
-                    system_clock_format(),
-                )
-            });
+            let suffix = item
+                .reminder
+                .as_ref()
+                .map(|reminder| format_schedule_suffix(reminder.due_at, now, &Local, clock_format));
             let committed_text = committed_canvas_text(&item, suffix.as_deref());
             let text = item.entry.working_text.as_deref().map_or_else(
                 || committed_text.clone(),
@@ -414,14 +581,19 @@ impl MainWindow {
                                 working,
                                 reminder.due_at,
                                 item.entry.updated_at,
-                                self.service.now(),
+                                now,
                                 &Local,
-                                system_clock_format(),
+                                clock_format,
                             )
                         },
                     )
                 },
             );
+            let needs_persist = item
+                .entry
+                .working_text
+                .as_deref()
+                .is_some_and(|working| working != text);
             let editor = Rc::new(CanvasEditor::saved(&item, &text, suffix));
             self.widgets.canvas_entries.append(&editor.root);
             self.slots.borrow_mut().push(CanvasSlot {
@@ -429,7 +601,11 @@ impl MainWindow {
                 item: Some(item),
                 committed_text,
             });
-            self.connect_editor(editor);
+            self.connect_editor(editor.clone());
+            if needs_persist {
+                editor.mark_dirty();
+                let _ = self.flush_editor(&editor);
+            }
         }
         let draft_text = self.service.load_canvas_draft().unwrap_or_else(|error| {
             self.show_error(&error.to_string());
@@ -454,7 +630,10 @@ impl MainWindow {
             if let (Some(window), Some(changed_editor)) = (weak.upgrade(), changed_editor.upgrade())
             {
                 window.update_editor(&changed_editor);
-                window.schedule_autosave(changed_editor.clone());
+                if !changed_editor.is_programmatic_update() {
+                    changed_editor.mark_dirty();
+                    window.schedule_autosave(changed_editor.clone());
+                }
             }
         });
 
@@ -694,26 +873,23 @@ impl MainWindow {
         if !self.flush_canvas_except_entry(entry_id) {
             return;
         }
-        if let Some(source) = self
-            .autosaves
-            .borrow_mut()
-            .remove(&editor_key(Some(entry_id)))
-        {
+        if let Some(source) = self.autosaves.borrow_mut().remove(&Some(entry_id)) {
             source.remove();
         }
         if let Err(error) = self.service.discard_canvas_working_text(entry_id) {
             self.show_error(&error.to_string());
             return;
         }
+        editor.mark_clean();
         self.refresh_views(Some((Some(entry_id), 0)));
     }
 
     fn schedule_autosave(self: &Rc<Self>, editor: Rc<CanvasEditor>) {
-        let key = editor_key(editor.entry_id);
+        let key = editor.entry_id;
         if let Some(source) = self.autosaves.borrow_mut().remove(&key) {
             source.remove();
         }
-        let closure_key = key.clone();
+        let closure_key = key;
         let weak = Rc::downgrade(self);
         let source = glib::timeout_add_local_once(StdDuration::from_millis(350), move || {
             if let Some(window) = weak.upgrade() {
@@ -725,7 +901,7 @@ impl MainWindow {
     }
 
     fn flush_editor(&self, editor: &Rc<CanvasEditor>) -> bool {
-        let key = editor_key(editor.entry_id);
+        let key = editor.entry_id;
         if let Some(source) = self.autosaves.borrow_mut().remove(&key) {
             source.remove();
         }
@@ -733,6 +909,9 @@ impl MainWindow {
     }
 
     fn persist_editor(&self, editor: &Rc<CanvasEditor>) -> bool {
+        if !editor.is_dirty() {
+            return true;
+        }
         let text = editor.text();
         let result = if let Some(entry_id) = editor.entry_id {
             let committed = self
@@ -751,7 +930,10 @@ impl MainWindow {
             self.service.save_canvas_draft(&text)
         };
         match result {
-            Ok(()) => true,
+            Ok(()) => {
+                editor.mark_clean();
+                true
+            }
             Err(error) => {
                 self.show_error(&format!(
                     "{}: {error}",
@@ -810,7 +992,7 @@ impl MainWindow {
             reminder.due_at,
             self.service.now(),
             &Local,
-            system_clock_format(),
+            self.clock_format.get(),
         );
         normalize_registered_suffix(text, previous, &current)
     }
@@ -987,7 +1169,7 @@ impl MainWindow {
             || editor.cursor_anchor_rect(),
             |offset| editor.anchor_rect_at_offset(offset),
         );
-        let picker = SchedulePicker::new(local_due, self.service.now(), system_clock_format());
+        let picker = SchedulePicker::new(local_due, self.service.now(), self.clock_format.get());
         let weak = Rc::downgrade(self);
         let apply_editor = Rc::downgrade(&editor);
         picker.connect_apply(move |PickerSelection { date, time }| {
@@ -1065,6 +1247,7 @@ impl MainWindow {
             .active_content
             .set_visible_child_name(if is_empty { "empty" } else { "list" });
         let grouped = group_active_reminders(reminders, self.service.now(), &Local);
+        let clock_format = self.clock_format.get();
         for group_name in ReminderGroup::ALL {
             let reminders = &grouped[&group_name];
             if reminders.is_empty() {
@@ -1076,7 +1259,7 @@ impl MainWindow {
                 group.rows.append(&rows::active_reminder_row(
                     reminder,
                     overdue,
-                    &format_due(reminder.due_at, overdue),
+                    &format_due(reminder.due_at, overdue, clock_format),
                 ));
             }
             self.widgets.active_groups.append(&group.widget);
@@ -1084,28 +1267,32 @@ impl MainWindow {
     }
 
     fn rebuild_history(&self, reminders: Vec<Reminder>) {
-        clear_box(&self.widgets.history_list);
         let empty = reminders.is_empty();
-        self.widgets.history_empty.set_visible(empty);
-        self.widgets.history_list.set_visible(!empty);
+        self.widgets
+            .history_content
+            .set_visible_child_name(if empty { "empty" } else { "list" });
         self.widgets.clear_history_button.set_sensitive(!empty);
-        if empty {
-            return;
-        }
-        let group = rows::FlatGroup::new(&gettextrs::gettext("Completed"));
-        for reminder in reminders {
-            let completed = reminder
-                .completed_at
-                .map_or_else(String::new, |completed_at| {
-                    format!(
-                        "{} {}",
-                        gettextrs::gettext("Completed"),
-                        format_local_datetime(completed_at)
-                    )
-                });
-            group.rows.append(&rows::history_row(&reminder, &completed));
-        }
-        self.widgets.history_list.append(&group.widget);
+        let clock_format = self.clock_format.get();
+        let rows = reminders
+            .into_iter()
+            .map(|reminder| {
+                let subtitle = reminder
+                    .completed_at
+                    .map_or_else(String::new, |completed_at| {
+                        format!(
+                            "{} {}",
+                            gettextrs::gettext("Completed"),
+                            format_local_datetime(completed_at, clock_format)
+                        )
+                    });
+                glib::BoxedAnyObject::new(HistoryRowData {
+                    title: reminder.message,
+                    subtitle,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.history_store
+            .splice(0, self.history_store.n_items(), &rows);
     }
 
     fn complete(self: &Rc<Self>, id: Uuid) {
@@ -1161,11 +1348,8 @@ impl MainWindow {
         if !self.flush_canvas() {
             return;
         }
-        let canvas_id = match self.service.list_canvas() {
-            Ok(items) => items
-                .into_iter()
-                .find(|item| item.entry.reminder_id == Some(id))
-                .map(|item| item.entry.id),
+        let canvas_id = match self.service.find_canvas_entry_by_reminder(id) {
+            Ok(entry) => entry.map(|entry| entry.id),
             Err(error) => {
                 self.show_error(&error.to_string());
                 return;
@@ -1448,10 +1632,6 @@ fn keeps_existing_suffix(
         .is_some_and(|suffix| span.is_some_and(|span| text[span.clone()].trim() == suffix))
 }
 
-fn editor_key(id: Option<Uuid>) -> String {
-    id.map_or_else(|| "draft".to_owned(), |id| id.to_string())
-}
-
 fn clear_box(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -1463,8 +1643,8 @@ fn show_inline_error(label: &gtk::Label, message: &str) {
     label.set_visible(true);
 }
 
-fn format_due(due_at: chrono::DateTime<Utc>, overdue: bool) -> String {
-    let formatted = format_local_datetime(due_at);
+fn format_due(due_at: chrono::DateTime<Utc>, overdue: bool, clock_format: ClockFormat) -> String {
+    let formatted = format_local_datetime(due_at, clock_format);
     if overdue {
         format!("{} {formatted}", gettextrs::gettext("Due"))
     } else {
@@ -1472,15 +1652,11 @@ fn format_due(due_at: chrono::DateTime<Utc>, overdue: bool) -> String {
     }
 }
 
-fn format_local_datetime(date_time: chrono::DateTime<Utc>) -> String {
+fn format_local_datetime(date_time: chrono::DateTime<Utc>, clock_format: ClockFormat) -> String {
     glib::DateTime::from_unix_local(date_time.timestamp())
         .and_then(|value| {
             let date = value.format("%x")?;
-            let time = format_clock_time(
-                value.hour() as u32,
-                value.minute() as u32,
-                system_clock_format(),
-            );
+            let time = format_clock_time(value.hour() as u32, value.minute() as u32, clock_format);
             Ok(format!("{date} {time}"))
         })
         .unwrap_or_else(|_| date_time.with_timezone(&Local).to_rfc2822())
@@ -1568,17 +1744,24 @@ fn glib_local_noon(date: NaiveDate) -> Option<glib::DateTime> {
     .ok()
 }
 
-fn system_clock_format() -> ClockFormat {
-    let Some(source) = gio::SettingsSchemaSource::default() else {
-        return ClockFormat::TwentyFourHour;
-    };
-    if source.lookup("org.gnome.desktop.interface", true).is_none() {
-        return ClockFormat::TwentyFourHour;
-    }
-    let settings = gio::Settings::new("org.gnome.desktop.interface");
-    if settings.string("clock-format") == "12h" {
+fn system_clock_settings() -> Option<gio::Settings> {
+    let source = gio::SettingsSchemaSource::default()?;
+    source.lookup("org.gnome.desktop.interface", true)?;
+    Some(gio::Settings::new("org.gnome.desktop.interface"))
+}
+
+fn clock_format_from_settings(settings: Option<&gio::Settings>) -> ClockFormat {
+    if settings.is_some_and(|settings| settings.string("clock-format") == "12h") {
         ClockFormat::TwelveHour
     } else {
         ClockFormat::TwentyFourHour
+    }
+}
+
+fn temporal_fingerprint(now: chrono::DateTime<Utc>) -> TemporalFingerprint {
+    let local = now.with_timezone(&Local);
+    TemporalFingerprint {
+        local_date: local.date_naive(),
+        utc_offset_seconds: local.offset().local_minus_utc(),
     }
 }

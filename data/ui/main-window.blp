@@ -136,32 +136,41 @@ Adw.ApplicationWindow main_window {
             }
           }
 
-          content: Gtk.ScrolledWindow {
-            hscrollbar-policy: never;
+          content: Adw.Clamp {
+            maximum-size: 560;
+            tightening-threshold: 500;
 
-            child: Adw.Clamp {
-              maximum-size: 560;
-              tightening-threshold: 500;
+            child: Gtk.Stack history_content {
+              transition-type: crossfade;
 
-              child: Gtk.Box {
-                orientation: vertical;
-                spacing: 14;
-                margin-top: 12;
-                margin-bottom: 12;
-                margin-start: 12;
-                margin-end: 12;
+              Gtk.StackPage {
+                name: "empty";
 
-                Gtk.Box history_list {
-                  orientation: vertical;
-                  spacing: 14;
-                }
-
-                Adw.StatusPage history_empty {
+                child: Adw.StatusPage history_empty {
                   icon-name: "document-open-recent-symbolic";
                   title: _("No History");
                   description: _("Completed reminders will appear here.");
-                }
-              };
+                };
+              }
+
+              Gtk.StackPage {
+                name: "list";
+
+                child: Gtk.ScrolledWindow {
+                  hscrollbar-policy: never;
+
+                  child: Gtk.ListView history_list {
+                    margin-top: 12;
+                    margin-bottom: 12;
+                    margin-start: 12;
+                    margin-end: 12;
+
+                    styles [
+                      "flat-reminder-list",
+                    ]
+                  };
+                };
+              }
             };
           };
         };

@@ -17,6 +17,8 @@ pub struct CanvasEditor {
     pub status: gtk::Image,
     pub entry_id: Option<Uuid>,
     pub reminder_id: Option<Uuid>,
+    dirty: Cell<bool>,
+    programmatic_update: Cell<bool>,
     committed_suffix: RefCell<Option<String>>,
     options_button: Option<gtk::MenuButton>,
     draft_tag: gtk::TextTag,
@@ -149,6 +151,8 @@ impl CanvasEditor {
             status,
             entry_id,
             reminder_id,
+            dirty: Cell::new(false),
+            programmatic_update: Cell::new(false),
             committed_suffix: RefCell::new(committed_suffix),
             options_button: menu_button,
             draft_tag,
@@ -161,6 +165,28 @@ impl CanvasEditor {
         buffer
             .text(&buffer.start_iter(), &buffer.end_iter(), false)
             .to_string()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.get()
+    }
+
+    pub fn mark_dirty(&self) {
+        self.dirty.set(true);
+    }
+
+    pub fn mark_clean(&self) {
+        self.dirty.set(false);
+    }
+
+    pub fn is_programmatic_update(&self) -> bool {
+        self.programmatic_update.get()
+    }
+
+    pub fn set_text_from_model(&self, text: &str) {
+        self.programmatic_update.set(true);
+        self.input.buffer().set_text(text);
+        self.programmatic_update.set(false);
     }
 
     pub fn cursor_anchor_rect(&self) -> gtk::gdk::Rectangle {

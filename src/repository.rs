@@ -5,15 +5,35 @@ use rusqlite::{Connection, OptionalExtension, Row, params, types::Type};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::model::{CanvasEntry, DeletedCanvasItem, Reminder, ReminderError};
+use crate::model::{
+    CanvasEntry, CanvasItem, DeletedCanvasItem, Reminder, ReminderError, ScheduleState,
+};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub trait ReminderRepository {
     fn insert(&self, reminder: &Reminder) -> Result<(), RepositoryError>;
     fn restore(&self, reminder: &Reminder) -> Result<(), RepositoryError>;
     fn get(&self, id: Uuid) -> Result<Reminder, RepositoryError>;
     fn list_active(&self) -> Result<Vec<Reminder>, RepositoryError>;
+    fn list_due(&self, now: DateTime<Utc>) -> Result<Vec<Reminder>, RepositoryError> {
+        Ok(self
+            .list_active()?
+            .into_iter()
+            .filter(|reminder| reminder.notified_at.is_none() && reminder.is_due(now))
+            .collect())
+    }
+    fn schedule_state(&self) -> Result<ScheduleState, RepositoryError> {
+        let active = self.list_active()?;
+        Ok(ScheduleState {
+            has_active: !active.is_empty(),
+            next_due: active
+                .iter()
+                .filter(|reminder| reminder.notified_at.is_none())
+                .map(|reminder| reminder.due_at)
+                .min(),
+        })
+    }
     fn list_history(&self) -> Result<Vec<Reminder>, RepositoryError>;
     fn edit(
         &self,
@@ -34,6 +54,24 @@ pub trait ReminderRepository {
     fn delete(&self, id: Uuid) -> Result<Reminder, RepositoryError>;
     fn clear_history(&self) -> Result<usize, RepositoryError>;
     fn list_canvas_entries(&self) -> Result<Vec<CanvasEntry>, RepositoryError>;
+    fn list_canvas_items(&self) -> Result<Vec<CanvasItem>, RepositoryError> {
+        self.list_canvas_entries()?
+            .into_iter()
+            .map(|entry| {
+                let reminder = entry.reminder_id.map(|id| self.get(id)).transpose()?;
+                Ok(CanvasItem { entry, reminder })
+            })
+            .collect()
+    }
+    fn find_canvas_entry_by_reminder(
+        &self,
+        reminder_id: Uuid,
+    ) -> Result<Option<CanvasEntry>, RepositoryError> {
+        Ok(self
+            .list_canvas_entries()?
+            .into_iter()
+            .find(|entry| entry.reminder_id == Some(reminder_id)))
+    }
     fn append_canvas_entry(
         &self,
         message: &str,
@@ -120,6 +158,9 @@ impl SqliteReminderRepository {
                 );
                 CREATE INDEX reminders_active_due_idx
                     ON reminders(due_at) WHERE completed_at IS NULL;
+                CREATE INDEX reminders_pending_due_idx
+                    ON reminders(due_at, created_at)
+                    WHERE completed_at IS NULL AND notified_at IS NULL;
                 CREATE INDEX reminders_history_idx
                     ON reminders(completed_at DESC) WHERE completed_at IS NOT NULL;
                 CREATE TABLE canvas_entries (
@@ -138,7 +179,7 @@ impl SqliteReminderRepository {
                     draft_text TEXT NOT NULL
                 );
                 INSERT INTO canvas_state (id, draft_text) VALUES (1, '');
-                PRAGMA user_version = 2;",
+                PRAGMA user_version = 3;",
             )?;
             transaction.commit()?;
         } else if version == 1 {
@@ -173,7 +214,19 @@ impl SqliteReminderRepository {
                     updated_at
                 FROM reminders
                 WHERE completed_at IS NULL;
-                PRAGMA user_version = 2;",
+                CREATE INDEX reminders_pending_due_idx
+                    ON reminders(due_at, created_at)
+                    WHERE completed_at IS NULL AND notified_at IS NULL;
+                PRAGMA user_version = 3;",
+            )?;
+            transaction.commit()?;
+        } else if version == 2 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "CREATE INDEX reminders_pending_due_idx
+                    ON reminders(due_at, created_at)
+                    WHERE completed_at IS NULL AND notified_at IS NULL;
+                PRAGMA user_version = 3;",
             )?;
             transaction.commit()?;
         } else if version != SCHEMA_VERSION {
@@ -307,6 +360,36 @@ impl ReminderRepository for SqliteReminderRepository {
         )
     }
 
+    fn list_due(&self, now: DateTime<Utc>) -> Result<Vec<Reminder>, RepositoryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, message, due_at, created_at, updated_at, notified_at, completed_at
+             FROM reminders
+             WHERE completed_at IS NULL AND notified_at IS NULL AND due_at <= ?1
+             ORDER BY due_at ASC, created_at ASC",
+        )?;
+        Ok(statement
+            .query_map([now.timestamp()], reminder_from_row)?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn schedule_state(&self) -> Result<ScheduleState, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT
+                    EXISTS(SELECT 1 FROM reminders WHERE completed_at IS NULL),
+                    (SELECT MIN(due_at) FROM reminders
+                     WHERE completed_at IS NULL AND notified_at IS NULL)",
+                [],
+                |row| {
+                    Ok(ScheduleState {
+                        has_active: row.get(0)?,
+                        next_due: optional_timestamp_from_row(row, 1)?,
+                    })
+                },
+            )
+            .map_err(RepositoryError::from)
+    }
+
     fn list_history(&self) -> Result<Vec<Reminder>, RepositoryError> {
         self.list(
             "SELECT id, message, due_at, created_at, updated_at, notified_at, completed_at
@@ -410,6 +493,37 @@ impl ReminderRepository for SqliteReminderRepository {
         Ok(statement
             .query_map([], canvas_entry_from_row)?
             .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn list_canvas_items(&self) -> Result<Vec<CanvasItem>, RepositoryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+                entry.id, entry.position, entry.message, entry.reminder_id,
+                entry.working_text, entry.created_at, entry.updated_at,
+                reminder.id, reminder.message, reminder.due_at, reminder.created_at,
+                reminder.updated_at, reminder.notified_at, reminder.completed_at
+             FROM canvas_entries AS entry
+             LEFT JOIN reminders AS reminder ON reminder.id = entry.reminder_id
+             ORDER BY entry.position ASC, entry.created_at ASC, entry.id ASC",
+        )?;
+        Ok(statement
+            .query_map([], canvas_item_from_row)?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn find_canvas_entry_by_reminder(
+        &self,
+        reminder_id: Uuid,
+    ) -> Result<Option<CanvasEntry>, RepositoryError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT id, position, message, reminder_id, working_text, created_at, updated_at
+                 FROM canvas_entries WHERE reminder_id = ?1",
+                [reminder_id.to_string()],
+                canvas_entry_from_row,
+            )
+            .optional()?)
     }
 
     fn append_canvas_entry(
@@ -692,20 +806,37 @@ fn canvas_entry_from_row(row: &Row<'_>) -> rusqlite::Result<CanvasEntry> {
     })
 }
 
+fn canvas_item_from_row(row: &Row<'_>) -> rusqlite::Result<CanvasItem> {
+    let entry = canvas_entry_from_row(row)?;
+    let reminder = row
+        .get::<_, Option<String>>(7)?
+        .map(|id_text| reminder_from_row_at(row, 7, id_text))
+        .transpose()?;
+    Ok(CanvasItem { entry, reminder })
+}
+
 fn reminder_from_row(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let id_text: String = row.get(0)?;
+    reminder_from_row_at(row, 0, id_text)
+}
+
+fn reminder_from_row_at(
+    row: &Row<'_>,
+    offset: usize,
+    id_text: String,
+) -> rusqlite::Result<Reminder> {
     let id = Uuid::parse_str(&id_text).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(error))
+        rusqlite::Error::FromSqlConversionFailure(offset, Type::Text, Box::new(error))
     })?;
 
     Ok(Reminder {
         id,
-        message: row.get(1)?,
-        due_at: timestamp_from_row(row, 2)?,
-        created_at: timestamp_from_row(row, 3)?,
-        updated_at: timestamp_from_row(row, 4)?,
-        notified_at: optional_timestamp_from_row(row, 5)?,
-        completed_at: optional_timestamp_from_row(row, 6)?,
+        message: row.get(offset + 1)?,
+        due_at: timestamp_from_row(row, offset + 2)?,
+        created_at: timestamp_from_row(row, offset + 3)?,
+        updated_at: timestamp_from_row(row, offset + 4)?,
+        notified_at: optional_timestamp_from_row(row, offset + 5)?,
+        completed_at: optional_timestamp_from_row(row, offset + 6)?,
     })
 }
 

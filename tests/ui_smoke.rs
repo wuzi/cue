@@ -4,7 +4,7 @@ use std::{cell::Cell, ops::Deref};
 use adw::prelude::*;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use cue::{
-    model::{CanvasEntry, DeletedCanvasItem, Reminder},
+    model::{CanvasEntry, DeletedCanvasItem, NewReminder, Reminder},
     repository::{ReminderRepository, RepositoryError, SqliteReminderRepository},
     resources,
     scheduler::{Clock, NotificationError, ReminderNotifier},
@@ -34,6 +34,11 @@ impl ReminderNotifier for NoopNotifier {
 struct FailingCanvasSaveRepository {
     inner: SqliteReminderRepository,
     fail_saves: Cell<bool>,
+    working_text_save_attempts: Cell<usize>,
+    draft_save_attempts: Cell<usize>,
+    canvas_list_calls: Cell<usize>,
+    active_list_calls: Cell<usize>,
+    history_list_calls: Cell<usize>,
 }
 
 impl FailingCanvasSaveRepository {
@@ -41,11 +46,35 @@ impl FailingCanvasSaveRepository {
         Self {
             inner: SqliteReminderRepository::in_memory().unwrap(),
             fail_saves: Cell::new(false),
+            working_text_save_attempts: Cell::new(0),
+            draft_save_attempts: Cell::new(0),
+            canvas_list_calls: Cell::new(0),
+            active_list_calls: Cell::new(0),
+            history_list_calls: Cell::new(0),
         }
     }
 
     fn set_fail_saves(&self, fail: bool) {
         self.fail_saves.set(fail);
+    }
+
+    fn reset_save_attempts(&self) {
+        self.working_text_save_attempts.set(0);
+        self.draft_save_attempts.set(0);
+    }
+
+    fn working_text_save_attempts(&self) -> usize {
+        self.working_text_save_attempts.get()
+    }
+
+    fn draft_save_attempts(&self) -> usize {
+        self.draft_save_attempts.get()
+    }
+
+    fn reset_query_calls(&self) {
+        self.canvas_list_calls.set(0);
+        self.active_list_calls.set(0);
+        self.history_list_calls.set(0);
     }
 }
 
@@ -69,8 +98,16 @@ impl ReminderRepository for FailingCanvasSaveRepository {
     delegate_repository_method!(insert(reminder: &Reminder) -> ());
     delegate_repository_method!(restore(reminder: &Reminder) -> ());
     delegate_repository_method!(get(id: Uuid) -> Reminder);
-    delegate_repository_method!(list_active() -> Vec<Reminder>);
-    delegate_repository_method!(list_history() -> Vec<Reminder>);
+    fn list_active(&self) -> Result<Vec<Reminder>, RepositoryError> {
+        self.active_list_calls.set(self.active_list_calls.get() + 1);
+        self.inner.list_active()
+    }
+
+    fn list_history(&self) -> Result<Vec<Reminder>, RepositoryError> {
+        self.history_list_calls
+            .set(self.history_list_calls.get() + 1);
+        self.inner.list_history()
+    }
     delegate_repository_method!(edit(
         id: Uuid,
         message: &str,
@@ -87,7 +124,10 @@ impl ReminderRepository for FailingCanvasSaveRepository {
     delegate_repository_method!(complete(id: Uuid, now: DateTime<Utc>) -> Reminder);
     delegate_repository_method!(delete(id: Uuid) -> Reminder);
     delegate_repository_method!(clear_history() -> usize);
-    delegate_repository_method!(list_canvas_entries() -> Vec<CanvasEntry>);
+    fn list_canvas_entries(&self) -> Result<Vec<CanvasEntry>, RepositoryError> {
+        self.canvas_list_calls.set(self.canvas_list_calls.get() + 1);
+        self.inner.list_canvas_entries()
+    }
     delegate_repository_method!(append_canvas_entry(
         message: &str,
         reminder: Option<&Reminder>,
@@ -100,6 +140,8 @@ impl ReminderRepository for FailingCanvasSaveRepository {
         text: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError> {
+        self.working_text_save_attempts
+            .set(self.working_text_save_attempts.get() + 1);
         if self.fail_saves.get() {
             return Err(RepositoryError::Database(
                 rusqlite::Error::ExecuteReturnedResults,
@@ -111,6 +153,8 @@ impl ReminderRepository for FailingCanvasSaveRepository {
     delegate_repository_method!(load_canvas_draft() -> String);
 
     fn save_canvas_draft(&self, text: &str) -> Result<(), RepositoryError> {
+        self.draft_save_attempts
+            .set(self.draft_save_attempts.get() + 1);
         if self.fail_saves.get() {
             return Err(RepositoryError::Database(
                 rusqlite::Error::ExecuteReturnedResults,
@@ -192,6 +236,25 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
     let window = ui::MainWindow::new(&application, service.clone(), || {}, || {}).unwrap();
     window.present();
     drain_main_context();
+    assert!(repository.canvas_list_calls.get() > 0);
+    assert_eq!(repository.active_list_calls.get(), 0);
+    assert_eq!(repository.history_list_calls.get(), 0);
+    repository.reset_query_calls();
+    window.scheduler_refresh(false, false);
+    drain_main_context();
+    assert_eq!(repository.canvas_list_calls.get(), 0);
+    assert_eq!(repository.active_list_calls.get(), 0);
+    assert_eq!(repository.history_list_calls.get(), 0);
+    window.scheduler_refresh(true, false);
+    drain_main_context();
+    assert_eq!(repository.canvas_list_calls.get(), 0);
+    assert_eq!(repository.active_list_calls.get(), 0);
+    assert_eq!(repository.history_list_calls.get(), 0);
+    repository.reset_save_attempts();
+    window.refresh();
+    drain_main_context();
+    assert_eq!(repository.working_text_save_attempts(), 0);
+    assert_eq!(repository.draft_save_attempts(), 0);
 
     let draft = find_css_class(window.widget().upcast_ref(), "canvas-draft")
         .unwrap()
@@ -280,23 +343,27 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
     let wide_picker_anchor = picker.pointing_to().1;
     std::thread::sleep(std::time::Duration::from_millis(30));
     drain_main_context();
-    draft_row.set_width_request(180);
-    draft_row.set_halign(gtk::Align::Start);
-    wait_until(|| draft.width() <= 180);
-    wait_until(|| picker.pointing_to().1.y() > wide_picker_anchor.y());
-    assert!(
-        picker.pointing_to().1.y() > wide_picker_anchor.y(),
-        "the custom picker anchor must follow allocation-driven word wrapping"
+    window.widget().set_default_size(360, 540);
+    wait_until(|| draft.width() < 400);
+    assert!(draft.width() < 400, "the test window must become narrow");
+    wait_until(|| picker.pointing_to().1 != wide_picker_anchor);
+    assert_ne!(
+        picker.pointing_to().1,
+        wide_picker_anchor,
+        "the custom picker anchor must follow allocation changes"
     );
     find_button_with_label(picker.upcast_ref(), "Cancel")
         .unwrap()
         .emit_clicked();
-    draft_row.set_width_request(-1);
-    draft_row.set_halign(gtk::Align::Fill);
-    drain_main_context();
+    window.widget().set_default_size(560, 540);
+    wait_until(|| draft.width() > 400);
     draft.buffer().set_text("A plain note");
+    repository.reset_query_calls();
     gtk::prelude::WidgetExt::activate_action(window.widget(), "win.commit-canvas", None).unwrap();
     drain_main_context();
+    assert_eq!(repository.canvas_list_calls.get(), 1);
+    assert_eq!(repository.active_list_calls.get(), 0);
+    assert_eq!(repository.history_list_calls.get(), 0);
 
     let entries = repository.list_canvas_entries().unwrap();
     assert_eq!(entries.len(), 1);
@@ -324,6 +391,10 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
     saved_note
         .buffer()
         .place_cursor(&saved_note.buffer().iter_at_offset(6));
+    repository.reset_save_attempts();
+    wait_until(|| repository.working_text_save_attempts() == 1);
+    assert_eq!(repository.working_text_save_attempts(), 1);
+    assert_eq!(repository.draft_save_attempts(), 0);
     let old_draft = draft.downgrade();
     let old_saved_note = saved_note.downgrade();
     drop(draft);
@@ -337,6 +408,8 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
         assert!(window_focuses(window.widget(), focused.upcast_ref()));
         assert_eq!(focused.buffer().cursor_position(), 6);
     }
+    assert_eq!(repository.working_text_save_attempts(), 1);
+    assert_eq!(repository.draft_save_attempts(), 0);
     assert!(old_draft.upgrade().is_some());
     assert!(old_saved_note.upgrade().is_some());
     let saved_note = find_text_view_containing(window.widget().upcast_ref(), "A plain note edited")
@@ -359,6 +432,7 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
         active_list_button.upcast_ref()
     ));
     saved_note.grab_focus();
+    repository.reset_save_attempts();
     saved_note.buffer().set_text("Survives a save failure");
     saved_note
         .buffer()
@@ -377,6 +451,9 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
     );
     repository.set_fail_saves(false);
     window.refresh();
+    window.refresh();
+    assert_eq!(repository.working_text_save_attempts(), 2);
+    assert_eq!(repository.draft_save_attempts(), 0);
     saved_note.buffer().set_text("A plain note edited");
     window.refresh();
     drain_main_context();
@@ -596,6 +673,7 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
         "an applied picker must leave the window hierarchy"
     );
 
+    repository.reset_query_calls();
     gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-active-list", None)
         .unwrap();
     drain_main_context();
@@ -604,11 +682,47 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
         navigation.visible_page_tag().as_deref(),
         Some("active-list")
     );
+    assert_eq!(repository.active_list_calls.get(), 1);
+    assert_eq!(repository.history_list_calls.get(), 0);
     assert!(find_action_row(window.widget().upcast_ref(), "Call Ada changed").is_some());
     assert!(navigation.pop());
+    const HISTORY_COUNT: i64 = 500;
+    for index in 0..HISTORY_COUNT {
+        let reminder = Reminder::create(
+            NewReminder::new(
+                format!("Completed reminder {index}"),
+                now + Duration::days(1),
+            ),
+            now,
+        )
+        .unwrap();
+        repository.insert(&reminder).unwrap();
+        repository
+            .complete(
+                reminder.id,
+                now + Duration::hours(1) + Duration::seconds(index),
+            )
+            .unwrap();
+    }
+    repository.reset_query_calls();
     gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-history", None).unwrap();
     drain_main_context();
     assert_eq!(navigation.visible_page_tag().as_deref(), Some("history"));
+    assert_eq!(repository.active_list_calls.get(), 0);
+    assert_eq!(repository.history_list_calls.get(), 1);
+    assert!(find_label_exact(window.widget().upcast_ref(), "Completed").is_some());
+    let history_view = find_descendant::<gtk::ListView>(window.widget().upcast_ref()).unwrap();
+    assert_eq!(
+        history_view.model().unwrap().n_items(),
+        HISTORY_COUNT as u32
+    );
+    wait_until(|| !find_all_css(history_view.upcast_ref(), "reminder-row").is_empty());
+    let realized_rows = find_all_css(history_view.upcast_ref(), "reminder-row").len();
+    assert!(realized_rows > 0);
+    assert!(
+        realized_rows < HISTORY_COUNT as usize,
+        "history should realize only visible rows, got {realized_rows}"
+    );
 }
 
 fn find_text_view_containing(root: &gtk::Widget, needle: &str) -> Option<gtk::TextView> {

@@ -14,10 +14,10 @@ fn reminder(message: &str, due_at: DateTime<Utc>, now: DateTime<Utc>) -> Reminde
 }
 
 #[test]
-fn new_database_uses_schema_two_and_persists_canvas_draft() {
+fn new_database_uses_schema_three_and_persists_canvas_draft() {
     let repository = SqliteReminderRepository::in_memory().unwrap();
 
-    assert_eq!(repository.schema_version().unwrap(), 2);
+    assert_eq!(repository.schema_version().unwrap(), 3);
     assert_eq!(repository.load_canvas_draft().unwrap(), "");
 
     repository.save_canvas_draft("unfinished @tom").unwrap();
@@ -84,7 +84,7 @@ fn schema_one_migration_backfills_only_active_reminders_in_writing_order() {
     let repository = SqliteReminderRepository::open(path).unwrap();
     let entries = repository.list_canvas_entries().unwrap();
 
-    assert_eq!(repository.schema_version().unwrap(), 2);
+    assert_eq!(repository.schema_version().unwrap(), 3);
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].message, "Written first");
     assert_eq!(entries[0].reminder_id, Some(first.id));
@@ -122,6 +122,38 @@ fn canvas_entries_keep_writing_order_and_restore_working_text() {
     assert_eq!(entries[1].reminder_id, Some(reminder.id));
     assert_eq!(entries[1].working_text.as_deref(), Some("Call Ada @tom"));
     assert_eq!(repository.get(reminder.id).unwrap(), reminder);
+}
+
+#[test]
+fn joined_canvas_items_preserve_order_and_target_reminder_links() {
+    let now = at(1_800_000_000);
+    let repository = SqliteReminderRepository::in_memory().unwrap();
+    let note = repository
+        .append_canvas_entry("First note", None, now)
+        .unwrap();
+    let scheduled = reminder("Call Ada", now + Duration::hours(1), now);
+    let scheduled_entry = repository
+        .append_canvas_entry("Call Ada", Some(&scheduled), now + Duration::seconds(1))
+        .unwrap();
+
+    let items = repository.list_canvas_items().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].entry, note);
+    assert_eq!(items[0].reminder, None);
+    assert_eq!(items[1].entry, scheduled_entry);
+    assert_eq!(items[1].reminder, Some(scheduled.clone()));
+    assert_eq!(
+        repository
+            .find_canvas_entry_by_reminder(scheduled.id)
+            .unwrap(),
+        Some(scheduled_entry)
+    );
+    assert_eq!(
+        repository
+            .find_canvas_entry_by_reminder(uuid::Uuid::new_v4())
+            .unwrap(),
+        None
+    );
 }
 
 #[test]

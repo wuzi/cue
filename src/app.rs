@@ -176,7 +176,7 @@ impl AppRuntime {
                 return;
             };
             match runtime.service.complete_target(&target) {
-                Ok(ActionOutcome::Applied) => runtime.reconcile_after_mutation(),
+                Ok(ActionOutcome::Applied) => runtime.reconcile_after_external_mutation(),
                 Ok(ActionOutcome::Ignored) => {}
                 Err(error) => runtime.report_service_error(&error),
             }
@@ -193,7 +193,7 @@ impl AppRuntime {
                 return;
             };
             match runtime.service.snooze_target(&target) {
-                Ok(ActionOutcome::Applied) => runtime.reconcile_after_mutation(),
+                Ok(ActionOutcome::Applied) => runtime.reconcile_after_external_mutation(),
                 Ok(ActionOutcome::Ignored) => {}
                 Err(error) => runtime.report_service_error(&error),
             }
@@ -255,7 +255,7 @@ impl AppRuntime {
             self.service.clone(),
             move || {
                 if let Some(runtime) = mutation_runtime.upgrade() {
-                    runtime.reconcile_after_mutation();
+                    runtime.reconcile_schedule_after_mutation();
                 }
             },
             move || {
@@ -297,36 +297,54 @@ impl AppRuntime {
     }
 
     fn refresh_scheduler(self: &Rc<Self>) {
-        let refresh_succeeded = match self.service.refresh() {
-            Ok(_) => true,
+        match self.service.refresh() {
+            Ok(result) => {
+                if let Some(window) = self.window.borrow().as_ref() {
+                    window.scheduler_refresh(!result.delivered.is_empty(), false);
+                }
+                self.update_background_hold(result.state.has_active);
+                self.reschedule(true, result.state.next_due);
+            }
             Err(error) => {
                 self.report_service_error(&error);
-                false
+                if let Some(window) = self.window.borrow().as_ref() {
+                    window.scheduler_refresh(false, true);
+                }
+                let should_hold = match self.service.schedule_state() {
+                    Ok(state) => state.has_active,
+                    Err(state_error) => {
+                        self.report_service_error(&state_error);
+                        true
+                    }
+                };
+                self.update_background_hold(should_hold);
+                self.reschedule(false, None);
             }
-        };
+        }
+    }
+
+    fn reconcile_after_external_mutation(self: &Rc<Self>) {
         if let Some(window) = self.window.borrow().as_ref() {
             window.refresh();
         }
-        self.update_background_hold();
-        self.reschedule(refresh_succeeded);
+        self.reconcile_schedule_after_mutation();
     }
 
-    fn reconcile_after_mutation(self: &Rc<Self>) {
-        if let Some(window) = self.window.borrow().as_ref() {
-            window.refresh();
-        }
-        self.update_background_hold();
-        self.reschedule(true);
-    }
-
-    fn update_background_hold(&self) {
-        let should_hold = match self.service.should_hold_background() {
-            Ok(value) => value,
+    fn reconcile_schedule_after_mutation(self: &Rc<Self>) {
+        match self.service.schedule_state() {
+            Ok(state) => {
+                self.update_background_hold(state.has_active);
+                self.reschedule(true, state.next_due);
+            }
             Err(error) => {
                 self.report_service_error(&error);
-                true
+                self.update_background_hold(true);
+                self.reschedule(false, None);
             }
-        };
+        }
+    }
+
+    fn update_background_hold(&self, should_hold: bool) {
         match self.background_hold.borrow_mut().update(should_hold) {
             Some(HoldChange::Hold) => {
                 let guard = gio::prelude::ApplicationExtManual::hold(&self.application);
@@ -339,23 +357,18 @@ impl AppRuntime {
         }
     }
 
-    fn reschedule(self: &Rc<Self>, refresh_succeeded: bool) {
+    fn reschedule(
+        self: &Rc<Self>,
+        refresh_succeeded: bool,
+        next_due: Option<chrono::DateTime<Utc>>,
+    ) {
         if let Some(source) = self.timer.borrow_mut().take() {
             source.remove();
         }
-        let next_due = if refresh_succeeded {
-            match self.service.next_due() {
-                Ok(next_due) => next_due,
-                Err(error) => {
-                    self.report_service_error(&error);
-                    None
-                }
-            }
-        } else {
-            None
+        let Some(delay) = refresh_wakeup_delay(refresh_succeeded, Utc::now(), next_due) else {
+            return;
         };
-        let delay = refresh_wakeup_delay(refresh_succeeded, Utc::now(), next_due)
-            .max(Duration::from_millis(50));
+        let delay = delay.max(Duration::from_millis(50));
         let weak = Rc::downgrade(self);
         let source = glib::timeout_add_local_once(delay, move || {
             if let Some(runtime) = weak.upgrade() {

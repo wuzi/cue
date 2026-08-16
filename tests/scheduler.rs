@@ -5,7 +5,7 @@ use std::{
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use cue::{
-    model::{CanvasEntry, DeletedCanvasItem, NewReminder, Reminder},
+    model::{CanvasEntry, DeletedCanvasItem, NewReminder, Reminder, ScheduleState},
     repository::{ReminderRepository, RepositoryError, SqliteReminderRepository},
     scheduler::{
         Clock, NotificationError, ReminderNotifier, Scheduler, SchedulerError,
@@ -59,16 +59,14 @@ impl ReminderNotifier for RecordingNotifier {
     }
 }
 
-struct FailingFinalListRepository {
+struct FailingFinalStateRepository {
     inner: SqliteReminderRepository,
-    active_list_calls: Cell<usize>,
 }
 
-impl FailingFinalListRepository {
+impl FailingFinalStateRepository {
     fn in_memory() -> Self {
         Self {
             inner: SqliteReminderRepository::in_memory().unwrap(),
-            active_list_calls: Cell::new(0),
         }
     }
 }
@@ -81,20 +79,23 @@ macro_rules! delegate_repository_method {
     };
 }
 
-impl ReminderRepository for FailingFinalListRepository {
+impl ReminderRepository for FailingFinalStateRepository {
     delegate_repository_method!(insert(reminder: &Reminder) -> ());
     delegate_repository_method!(restore(reminder: &Reminder) -> ());
     delegate_repository_method!(get(id: Uuid) -> Reminder);
 
     fn list_active(&self) -> Result<Vec<Reminder>, RepositoryError> {
-        let call = self.active_list_calls.get() + 1;
-        self.active_list_calls.set(call);
-        if call == 2 {
-            return Err(RepositoryError::Database(
-                rusqlite::Error::ExecuteReturnedResults,
-            ));
-        }
-        self.inner.list_active()
+        panic!("scheduler refresh must use targeted due/state queries")
+    }
+
+    fn list_due(&self, now: DateTime<Utc>) -> Result<Vec<Reminder>, RepositoryError> {
+        self.inner.list_due(now)
+    }
+
+    fn schedule_state(&self) -> Result<ScheduleState, RepositoryError> {
+        Err(RepositoryError::Database(
+            rusqlite::Error::ExecuteReturnedResults,
+        ))
     }
 
     delegate_repository_method!(list_history() -> Vec<Reminder>);
@@ -193,6 +194,13 @@ fn overdue_reminder_is_dispatched_once_and_marked_notified() {
     let second = scheduler.refresh().unwrap();
 
     assert_eq!(first.delivered, vec![item.id]);
+    assert_eq!(
+        first.state,
+        ScheduleState {
+            has_active: true,
+            next_due: None,
+        }
+    );
     assert!(second.delivered.is_empty());
     assert_eq!(notifier.sent.borrow().len(), 1);
     assert!(repository.get(item.id).unwrap().notified_at.is_some());
@@ -274,7 +282,7 @@ fn failed_notification_is_left_unnotified_for_a_later_retry() {
 #[test]
 fn failed_final_schedule_read_does_not_play_delivery_sound() {
     let now = at(1_800_000_000);
-    let repository = Rc::new(FailingFinalListRepository::in_memory());
+    let repository = Rc::new(FailingFinalStateRepository::in_memory());
     let clock = Rc::new(FakeClock(Cell::new(now)));
     let notifier = Rc::new(RecordingNotifier::default());
     let scheduler = Scheduler::new(repository.clone(), clock.clone(), notifier.clone());
@@ -321,17 +329,18 @@ fn wakeup_delay_uses_exact_near_due_time_and_caps_the_safety_check() {
 
     assert_eq!(
         wakeup_delay(now, Some(now + Duration::seconds(5))),
-        std::time::Duration::from_secs(5)
+        Some(std::time::Duration::from_secs(5))
     );
     assert_eq!(
         wakeup_delay(now, Some(now + Duration::hours(3))),
-        std::time::Duration::from_secs(30)
+        Some(std::time::Duration::from_secs(30))
     );
     assert_eq!(
         wakeup_delay(now, Some(now - Duration::minutes(1))),
-        std::time::Duration::ZERO
+        Some(std::time::Duration::ZERO)
     );
-    assert_eq!(wakeup_delay(now, None), std::time::Duration::from_secs(30));
+    assert_eq!(wakeup_delay(now, None), None);
+    assert_eq!(refresh_wakeup_delay(true, now, None), None);
 }
 
 #[test]
@@ -340,6 +349,6 @@ fn failed_refresh_retries_on_the_thirty_second_safety_interval() {
 
     assert_eq!(
         refresh_wakeup_delay(false, now, Some(now - Duration::minutes(1))),
-        std::time::Duration::from_secs(30)
+        Some(std::time::Duration::from_secs(30))
     );
 }

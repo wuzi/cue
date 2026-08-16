@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 use crate::{
     canvas::normalize_working_after_due_change,
-    model::{CanvasItem, CanvasSchedule, DeletedCanvasItem, NewReminder, Reminder, ReminderError},
+    model::{
+        CanvasEntry, CanvasItem, CanvasSchedule, DeletedCanvasItem, NewReminder, Reminder,
+        ReminderError, ScheduleState,
+    },
     repository::{ReminderRepository, RepositoryError},
     schedule::{ScheduleError, ScheduleExpression, resolve_schedule},
     scheduler::{
@@ -78,17 +81,14 @@ impl ReminderService {
     }
 
     pub fn list_canvas(&self) -> Result<Vec<CanvasItem>, ServiceError> {
-        self.repository
-            .list_canvas_entries()?
-            .into_iter()
-            .map(|entry| {
-                let reminder = entry
-                    .reminder_id
-                    .map(|id| self.repository.get(id))
-                    .transpose()?;
-                Ok(CanvasItem { entry, reminder })
-            })
-            .collect()
+        Ok(self.repository.list_canvas_items()?)
+    }
+
+    pub fn find_canvas_entry_by_reminder(
+        &self,
+        reminder_id: Uuid,
+    ) -> Result<Option<CanvasEntry>, ServiceError> {
+        Ok(self.repository.find_canvas_entry_by_reminder(reminder_id)?)
     }
 
     pub fn load_canvas_draft(&self) -> Result<String, ServiceError> {
@@ -269,11 +269,7 @@ impl ReminderService {
     pub fn snooze(&self, id: Uuid) -> Result<Reminder, ServiceError> {
         let now = self.clock.now();
         let previous = self.repository.get(id)?;
-        let linked = self
-            .repository
-            .list_canvas_entries()?
-            .into_iter()
-            .find(|entry| entry.reminder_id == Some(id));
+        let linked = self.repository.find_canvas_entry_by_reminder(id)?;
         let mut projected = previous.clone();
         projected.snooze(now);
         let normalized = linked.as_ref().and_then(|entry| {
@@ -337,11 +333,15 @@ impl ReminderService {
     }
 
     pub fn next_due(&self) -> Result<Option<DateTime<Utc>>, ServiceError> {
-        Ok(self.scheduler.next_due()?)
+        Ok(self.schedule_state()?.next_due)
+    }
+
+    pub fn schedule_state(&self) -> Result<ScheduleState, ServiceError> {
+        Ok(self.repository.schedule_state()?)
     }
 
     pub fn should_hold_background(&self) -> Result<bool, ServiceError> {
-        Ok(!self.repository.list_active()?.is_empty())
+        Ok(self.schedule_state()?.has_active)
     }
 
     pub fn complete_target(&self, target: &str) -> Result<ActionOutcome, ServiceError> {

@@ -20,8 +20,8 @@ pub struct WindowWidgets {
     pub canvas_entries: gtk::Box,
     pub active_content: gtk::Stack,
     pub active_groups: gtk::Box,
-    pub history_list: gtk::Box,
-    pub history_empty: adw::StatusPage,
+    pub history_content: gtk::Stack,
+    pub history_list: gtk::ListView,
     pub clear_history_button: gtk::Button,
 }
 
@@ -42,8 +42,8 @@ pub fn build_window(application: &adw::Application) -> Result<WindowWidgets, UiB
         canvas_entries: object(&builder, "canvas_entries")?,
         active_content: object(&builder, "active_content")?,
         active_groups: object(&builder, "active_groups")?,
+        history_content: object(&builder, "history_content")?,
         history_list: object(&builder, "history_list")?,
-        history_empty: object(&builder, "history_empty")?,
         clear_history_button: object(&builder, "clear_history_button")?,
     };
 

@@ -5,7 +5,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    model::Reminder,
+    model::{Reminder, ScheduleState},
     repository::{ReminderRepository, RepositoryError},
 };
 
@@ -54,12 +54,7 @@ impl Scheduler {
 
     pub fn refresh(&self) -> Result<RefreshResult, SchedulerError> {
         let now = self.clock.now();
-        let due = self
-            .repository
-            .list_active()?
-            .into_iter()
-            .filter(|reminder| reminder.notified_at.is_none() && reminder.is_due(now))
-            .collect::<Vec<_>>();
+        let due = self.repository.list_due(now)?;
 
         let mut delivered = Vec::with_capacity(due.len());
         for reminder in due {
@@ -68,26 +63,17 @@ impl Scheduler {
             self.repository.mark_notified(reminder.id, now)?;
             delivered.push(reminder.id);
         }
-        let next_due = self.next_due()?;
+        let state = self.repository.schedule_state()?;
 
         if !delivered.is_empty() {
             self.notifier.play_delivery_sound();
         }
 
-        Ok(RefreshResult {
-            delivered,
-            next_due,
-        })
+        Ok(RefreshResult { delivered, state })
     }
 
     pub fn next_due(&self) -> Result<Option<DateTime<Utc>>, RepositoryError> {
-        Ok(self
-            .repository
-            .list_active()?
-            .into_iter()
-            .filter(|reminder| reminder.notified_at.is_none())
-            .map(|reminder| reminder.due_at)
-            .min())
+        Ok(self.repository.schedule_state()?.next_due)
     }
 }
 
@@ -95,17 +81,20 @@ pub fn stable_notification_id(id: Uuid) -> String {
     format!("reminder-{id}")
 }
 
-pub fn wakeup_delay(now: DateTime<Utc>, next_due: Option<DateTime<Utc>>) -> std::time::Duration {
-    let Some(next_due) = next_due else {
-        return SAFETY_CHECK_INTERVAL;
-    };
+pub fn wakeup_delay(
+    now: DateTime<Utc>,
+    next_due: Option<DateTime<Utc>>,
+) -> Option<std::time::Duration> {
+    let next_due = next_due?;
     if next_due <= now {
-        return std::time::Duration::ZERO;
+        return Some(std::time::Duration::ZERO);
     }
-    (next_due - now)
-        .to_std()
-        .unwrap_or(std::time::Duration::ZERO)
-        .min(SAFETY_CHECK_INTERVAL)
+    Some(
+        (next_due - now)
+            .to_std()
+            .unwrap_or(std::time::Duration::ZERO)
+            .min(SAFETY_CHECK_INTERVAL),
+    )
 }
 
 pub const SAFETY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -114,18 +103,18 @@ pub fn refresh_wakeup_delay(
     refresh_succeeded: bool,
     now: DateTime<Utc>,
     next_due: Option<DateTime<Utc>>,
-) -> std::time::Duration {
+) -> Option<std::time::Duration> {
     if refresh_succeeded {
         wakeup_delay(now, next_due)
     } else {
-        SAFETY_CHECK_INTERVAL
+        Some(SAFETY_CHECK_INTERVAL)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshResult {
     pub delivered: Vec<Uuid>,
-    pub next_due: Option<DateTime<Utc>>,
+    pub state: ScheduleState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
