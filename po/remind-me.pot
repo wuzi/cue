@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: remind-me\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-15 22:20+0000\n"
+"POT-Creation-Date: 2026-08-15 21:10-0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -68,253 +68,267 @@ msgid "Active Reminders"
 msgstr ""
 
 #: po/messages.c:6
-msgid "Write a note…"
-msgstr ""
-
-#: po/messages.c:7
 msgid "No Active Reminders"
 msgstr ""
 
-#: po/messages.c:8
+#: po/messages.c:7
 msgid "Add an @schedule to a canvas note to create one."
 msgstr ""
 
-#: po/messages.c:9
+#: po/messages.c:8
 msgid "History"
 msgstr ""
 
-#: po/messages.c:10
+#: po/messages.c:9
 msgid "Clear History"
 msgstr ""
 
-#: po/messages.c:11
+#: po/messages.c:10
 msgid "No History"
 msgstr ""
 
-#: po/messages.c:12
+#: po/messages.c:11
 msgid "Completed reminders will appear here."
 msgstr ""
 
-#: po/messages.c:13
+#: po/messages.c:12
 msgid "The application did not finish starting."
 msgstr ""
 
-#: po/messages.c:14
+#: po/messages.c:13
 msgid "Create quick notes that remind you at the right time."
 msgstr ""
 
-#: po/messages.c:15
+#: po/messages.c:14
 msgid "Reminders are unavailable"
 msgstr ""
 
-#: po/messages.c:16
+#: po/messages.c:15
 msgid "Reminder"
 msgstr ""
 
-#: po/messages.c:17
+#: po/messages.c:16
 msgid "Done"
 msgstr ""
 
-#: po/messages.c:18
+#: po/messages.c:17
 msgid "Snooze 10 min"
 msgstr ""
 
-#: po/messages.c:19
+#: po/messages.c:18
 msgid "AM"
 msgstr ""
 
-#: po/messages.c:20
+#: po/messages.c:19
 msgid "PM"
 msgstr ""
 
-#: po/messages.c:21
+#: po/messages.c:20
 msgid "Quit with reminders pending?"
 msgstr ""
 
-#: po/messages.c:22
+#: po/messages.c:21
 msgid "Reminders cannot notify you after the application quits."
 msgstr ""
 
-#: po/messages.c:23
+#: po/messages.c:22
 msgid "Cancel"
 msgstr ""
 
-#: po/messages.c:24
+#: po/messages.c:23
 msgid "Quit"
 msgstr ""
 
-#: po/messages.c:25
+#: po/messages.c:24
 msgid "About Remind Me"
 msgstr ""
 
-#: po/messages.c:26
+#: po/messages.c:25
 msgid "Finish the schedule after @"
 msgstr ""
 
-#: po/messages.c:27
+#: po/messages.c:26
 msgid "I don't understand that schedule"
 msgstr ""
 
-#: po/messages.c:28
+#: po/messages.c:27
 msgid "Use a positive amount of time"
 msgstr ""
 
-#: po/messages.c:29
+#: po/messages.c:28
 msgid "That schedule is too far away"
 msgstr ""
 
-#: po/messages.c:30
+#: po/messages.c:29
 msgid "That schedule is out of range"
 msgstr ""
 
-#: po/messages.c:31
+#: po/messages.c:30
 msgid "Custom…"
 msgstr ""
 
+#: po/messages.c:31
+msgid "Choose reminder time"
+msgstr ""
+
 #: po/messages.c:32
-msgid "Custom time"
+msgid "Time"
 msgstr ""
 
 #: po/messages.c:33
-msgid "Apply"
+msgid "AM or PM"
 msgstr ""
 
 #: po/messages.c:34
-msgid "Hour"
+msgid "Apply"
 msgstr ""
 
 #: po/messages.c:35
-msgid "Minute"
+msgid "Hour"
 msgstr ""
 
 #: po/messages.c:36
-msgid "Snooze 10 minutes"
+msgid "Minute"
 msgstr ""
 
 #: po/messages.c:37
-msgid "Mark done"
+msgid "Snooze 10 minutes"
 msgstr ""
 
 #: po/messages.c:38
-msgid "Reminder options"
+msgid "Mark done"
 msgstr ""
 
 #: po/messages.c:39
-msgid "Canvas entry"
+msgid "Reminder options"
 msgstr ""
 
 #: po/messages.c:40
-msgid "Entry options"
+msgid "Canvas entry"
 msgstr ""
 
 #: po/messages.c:41
-msgid "Reminder is still scheduled"
+msgid "Entry options"
 msgstr ""
 
 #: po/messages.c:42
-msgid "Still scheduled"
+msgid "Reminder is still scheduled"
 msgstr ""
 
 #: po/messages.c:43
-msgid "Write a note or add an English schedule beginning with at sign"
+msgid "Still scheduled"
 msgstr ""
 
 #: po/messages.c:44
-msgid "Completed"
+msgid "Write a note or add an English schedule beginning with at sign"
 msgstr ""
 
 #: po/messages.c:45
-msgid "Canvas entry deleted"
+msgid "Completed"
 msgstr ""
 
 #: po/messages.c:46
-msgid "Reminder deleted"
+msgid "Canvas entry deleted"
 msgstr ""
 
 #: po/messages.c:47
-msgid "Undo"
+msgid "Reminder deleted"
 msgstr ""
 
 #: po/messages.c:48
-msgid "Edit Reminder"
+msgid "Undo"
 msgstr ""
 
 #: po/messages.c:49
-msgid "Reminder message"
+msgid "Edit Reminder"
 msgstr ""
 
 #: po/messages.c:50
-msgid "Save"
+msgid "Reminder message"
 msgstr ""
 
 #: po/messages.c:51
-msgid "Choose a valid date"
+msgid "Save"
 msgstr ""
 
 #: po/messages.c:52
-msgid "Choose a valid time"
+msgid "Choose a valid date"
 msgstr ""
 
 #: po/messages.c:53
-msgid "Choose a valid local date and time"
+msgid "Choose a valid time"
 msgstr ""
 
 #: po/messages.c:54
-msgid "Clear reminder history?"
+msgid "Choose a valid local date and time"
 msgstr ""
 
 #: po/messages.c:55
-msgid "This cannot be undone."
+msgid "Clear reminder history?"
 msgstr ""
 
 #: po/messages.c:56
-msgid "Clear"
+msgid "This cannot be undone."
 msgstr ""
 
 #: po/messages.c:57
-msgid "Edit"
+msgid "Clear"
 msgstr ""
 
 #: po/messages.c:58
-msgid "Delete"
+msgid "Edit"
 msgstr ""
 
 #: po/messages.c:59
-msgid "Due"
+msgid "Delete"
 msgstr ""
 
 #: po/messages.c:60
-msgid "Overdue"
+msgid "Due"
 msgstr ""
 
 #: po/messages.c:61
-msgid "Today"
+msgid "Overdue"
 msgstr ""
 
 #: po/messages.c:62
-msgid "Tomorrow"
+msgid "Today"
 msgstr ""
 
 #: po/messages.c:63
-msgid "Later"
+msgid "Tomorrow"
 msgstr ""
 
 #: po/messages.c:64
-msgid "Enter a note or reminder message"
+msgid "Later"
 msgstr ""
 
 #: po/messages.c:65
-msgid "Notes and reminder messages can contain at most 280 characters"
+msgid "Enter a note or reminder message"
 msgstr ""
 
 #: po/messages.c:66
-msgid "Could not save canvas changes"
+msgid "Notes and reminder messages can contain at most 280 characters"
 msgstr ""
 
 #: po/messages.c:67
-msgid "Choose a time in the future"
+msgid "Could not save canvas changes"
 msgstr ""
 
 #: po/messages.c:68
+msgid "Choose a time in the future"
+msgstr ""
+
+#: po/messages.c:69
 msgid "That local time does not exist because the clock changes then"
+msgstr ""
+
+#: po/messages.c:70
+msgid "There is no selectable time left today."
+msgstr ""
+
+#: po/messages.c:71
+msgid ""
+"Notifications are unavailable in this development run. Install Remind Me to "
+"receive reminders."
 msgstr ""

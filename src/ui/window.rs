@@ -27,7 +27,12 @@ use crate::{
     time_utils::{ClockFormat, default_due_time, format_clock_time, resolve_local_datetime},
 };
 
-use super::{UiBuildError, WindowWidgets, build_window, canvas::CanvasEditor, rows};
+use super::{
+    UiBuildError, WindowWidgets, build_window,
+    canvas::CanvasEditor,
+    rows,
+    schedule_picker::{PickerSelection, SchedulePicker},
+};
 
 struct CanvasSlot {
     editor: Rc<CanvasEditor>,
@@ -39,6 +44,7 @@ struct SuggestionMenu {
     popover: gtk::Popover,
     list: gtk::ListBox,
     target: Option<Uuid>,
+    anchor_tick: gtk::TickCallbackId,
 }
 
 const SUGGESTIONS: [Option<&str>; 6] = [
@@ -57,7 +63,7 @@ pub struct MainWindow {
     autosaves: RefCell<HashMap<String, glib::SourceId>>,
     reminder_to_focus: Cell<Option<Uuid>>,
     suggestions: RefCell<Option<SuggestionMenu>>,
-    custom_popover: RefCell<Option<gtk::Popover>>,
+    custom_popover: RefCell<Option<Rc<SchedulePicker>>>,
     style_signal_ids: RefCell<Vec<glib::SignalHandlerId>>,
     on_mutation: Box<dyn Fn()>,
     on_closed: Box<dyn Fn()>,
@@ -382,12 +388,13 @@ impl MainWindow {
                 let _ = self.flush_editor(&editor);
             }
         }
-        self.update_placeholder();
         true
     }
 
     fn rebuild_canvas(self: &Rc<Self>, items: Vec<CanvasItem>, focus: Option<(Option<Uuid>, i32)>) {
         self.cancel_autosaves();
+        self.dismiss_suggestions();
+        self.dismiss_custom_popover();
         clear_box(&self.widgets.canvas_entries);
         self.slots.borrow_mut().clear();
         for item in items {
@@ -439,7 +446,6 @@ impl MainWindow {
             committed_text: String::new(),
         });
         self.connect_editor(draft);
-        self.update_placeholder();
         self.focus_after_rebuild(focus, true);
     }
 
@@ -452,9 +458,21 @@ impl MainWindow {
             {
                 window.update_editor(&changed_editor);
                 window.schedule_autosave(changed_editor.clone());
-                window.update_placeholder();
             }
         });
+
+        let weak = Rc::downgrade(self);
+        let cursor_editor = Rc::downgrade(&editor);
+        editor
+            .input
+            .buffer()
+            .connect_cursor_position_notify(move |_| {
+                if let (Some(window), Some(cursor_editor)) =
+                    (weak.upgrade(), cursor_editor.upgrade())
+                {
+                    window.update_suggestion_anchor(&cursor_editor);
+                }
+            });
 
         let keys = gtk::EventControllerKey::new();
         let weak = Rc::downgrade(self);
@@ -517,6 +535,13 @@ impl MainWindow {
             if let (Some(window), Some(focused_editor)) = (weak.upgrade(), focused_editor.upgrade())
             {
                 let _ = window.flush_editor(&focused_editor);
+                glib::idle_add_local_once(move || {
+                    if !window.editor_is_focused(&focused_editor)
+                        && window.suggestions_for(&focused_editor)
+                    {
+                        window.dismiss_suggestions();
+                    }
+                });
             }
         });
         editor.input.add_controller(focus);
@@ -532,7 +557,7 @@ impl MainWindow {
             else {
                 return;
             };
-            let Some(iter) = clicked_editor.input.iter_at_location(x as i32, y as i32) else {
+            let Some(iter) = clicked_editor.iter_at_widget_location(x as i32, y as i32) else {
                 return;
             };
             let text = clicked_editor.text();
@@ -543,7 +568,7 @@ impl MainWindow {
             let start = text[..span.start].chars().count() as i32;
             let end = text[..span.end].chars().count() as i32;
             if (start..=end).contains(&iter.offset()) {
-                window.show_custom_when_popover(clicked_editor.clone());
+                window.show_custom_when_popover_at(clicked_editor.clone(), Some(iter.offset()));
             }
         });
         editor.input.add_controller(click);
@@ -585,7 +610,7 @@ impl MainWindow {
         editor.set_error(error.as_deref());
         let committed_suffix = editor.committed_suffix();
         editor.set_dirty_registered(!committed, committed_suffix.as_deref().unwrap_or_default());
-        if matches!(parsed.status, ScheduleParseStatus::Partial) && editor.input.has_focus() {
+        if matches!(parsed.status, ScheduleParseStatus::Partial) && self.editor_is_focused(editor) {
             self.show_suggestions(editor.clone());
         } else if self.suggestions_for(editor) {
             self.dismiss_suggestions();
@@ -801,6 +826,7 @@ impl MainWindow {
 
     fn show_suggestions(self: &Rc<Self>, editor: Rc<CanvasEditor>) {
         if self.suggestions_for(&editor) {
+            self.update_suggestion_anchor(&editor);
             return;
         }
         self.dismiss_suggestions();
@@ -808,6 +834,8 @@ impl MainWindow {
         popover.set_parent(&editor.input);
         popover.set_autohide(false);
         popover.set_position(gtk::PositionType::Bottom);
+        popover.set_pointing_to(Some(&editor.cursor_anchor_rect()));
+        popover.add_css_class("schedule-suggestions");
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.add_css_class("suggestions");
@@ -835,16 +863,39 @@ impl MainWindow {
             }
         });
         popover.popup();
+        let weak = Rc::downgrade(self);
+        let anchor_editor = Rc::downgrade(&editor);
+        let anchor_tick = editor.input.add_tick_callback(move |_, _| {
+            let (Some(window), Some(editor)) = (weak.upgrade(), anchor_editor.upgrade()) else {
+                return glib::ControlFlow::Break;
+            };
+            if !window.suggestions_for(&editor) {
+                return glib::ControlFlow::Break;
+            }
+            window.update_suggestion_anchor(&editor);
+            glib::ControlFlow::Continue
+        });
         *self.suggestions.borrow_mut() = Some(SuggestionMenu {
             popover,
             list,
             target: editor.entry_id,
+            anchor_tick,
         });
         editor.input.grab_focus();
     }
 
+    fn update_suggestion_anchor(&self, editor: &CanvasEditor) {
+        if let Some(menu) = self.suggestions.borrow().as_ref()
+            && menu.target == editor.entry_id
+        {
+            let anchor = editor.cursor_anchor_rect();
+            menu.popover.set_pointing_to(Some(&anchor));
+        }
+    }
+
     fn dismiss_suggestions(&self) {
         if let Some(menu) = self.suggestions.borrow_mut().take() {
+            menu.anchor_tick.remove();
             menu.popover.popdown();
             menu.popover.unparent();
         }
@@ -910,11 +961,16 @@ impl MainWindow {
     }
 
     fn show_custom_when_popover(self: &Rc<Self>, editor: Rc<CanvasEditor>) {
+        self.show_custom_when_popover_at(editor, None);
+    }
+
+    fn show_custom_when_popover_at(
+        self: &Rc<Self>,
+        editor: Rc<CanvasEditor>,
+        anchor_offset: Option<i32>,
+    ) {
         self.dismiss_suggestions();
-        if let Some(previous) = self.custom_popover.borrow_mut().take() {
-            previous.popdown();
-            previous.unparent();
-        }
+        self.dismiss_custom_popover();
         let parsed = parse_english(&editor.text());
         let current = match parsed.status {
             ScheduleParseStatus::Valid(schedule) => Some(schedule),
@@ -930,99 +986,31 @@ impl MainWindow {
             })
             .unwrap_or_else(|| default_due_time(self.service.now()))
             .with_timezone(&Local);
-        let popover = gtk::Popover::new();
-        popover.set_parent(&editor.input);
-        popover.add_css_class("menu");
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        content.set_margin_top(12);
-        content.set_margin_bottom(12);
-        content.set_margin_start(12);
-        content.set_margin_end(12);
-        content.set_size_request(300, -1);
-        let title = gtk::Label::new(Some(&gettextrs::gettext("Custom time")));
-        title.add_css_class("heading");
-        title.set_halign(gtk::Align::Start);
-        content.append(&title);
-        let calendar = gtk::Calendar::new();
-        if let Some(date) = glib_local_noon(local_due.date_naive()) {
-            calendar.set_date(&date);
-        }
-        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        controls.set_halign(gtk::Align::Center);
-        let hour = gtk::SpinButton::with_range(0.0, 23.0, 1.0);
-        hour.set_value(local_due.hour() as f64);
-        hour.set_wrap(true);
-        hour.set_tooltip_text(Some(&gettextrs::gettext("Hour")));
-        let minute = gtk::SpinButton::with_range(0.0, 59.0, 1.0);
-        minute.set_value(local_due.minute() as f64);
-        minute.set_wrap(true);
-        minute.set_tooltip_text(Some(&gettextrs::gettext("Minute")));
-        controls.append(&hour);
-        controls.append(&gtk::Label::new(Some(":")));
-        controls.append(&minute);
-        let error = gtk::Label::new(None);
-        error.set_visible(false);
-        error.set_halign(gtk::Align::Start);
-        error.set_wrap(true);
-        error.add_css_class("error");
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        actions.set_halign(gtk::Align::End);
-        let cancel = gtk::Button::with_label(&gettextrs::gettext("Cancel"));
-        let apply = gtk::Button::with_label(&gettextrs::gettext("Apply"));
-        apply.add_css_class("suggested-action");
-        actions.append(&cancel);
-        actions.append(&apply);
-        content.append(&calendar);
-        content.append(&controls);
-        content.append(&error);
-        content.append(&actions);
-        popover.set_child(Some(&content));
-        let cancel_popover = popover.downgrade();
-        cancel.connect_clicked(move |_| {
-            if let Some(popover) = cancel_popover.upgrade() {
-                popover.popdown();
-            }
-        });
-
+        let anchor = anchor_offset.map_or_else(
+            || editor.cursor_anchor_rect(),
+            |offset| editor.anchor_rect_at_offset(offset),
+        );
+        let picker = SchedulePicker::new(local_due, self.service.now(), system_clock_format());
         let weak = Rc::downgrade(self);
         let apply_editor = Rc::downgrade(&editor);
-        let apply_popover = popover.downgrade();
-        apply.connect_clicked(move |_| {
+        picker.connect_apply(move |PickerSelection { date, time }| {
             let (Some(window), Some(apply_editor)) = (weak.upgrade(), apply_editor.upgrade())
             else {
-                return;
-            };
-            let selected = calendar.date();
-            let Some(date) = NaiveDate::from_ymd_opt(
-                selected.year(),
-                selected.month() as u32,
-                selected.day_of_month() as u32,
-            ) else {
-                show_inline_error(&error, &gettextrs::gettext("Choose a valid date"));
-                return;
-            };
-            let Some(time) = chrono::NaiveTime::from_hms_opt(
-                hour.value_as_int() as u32,
-                minute.value_as_int() as u32,
-                0,
-            ) else {
-                show_inline_error(&error, &gettextrs::gettext("Choose a valid time"));
-                return;
+                return Ok(());
             };
             let schedule = ScheduleExpression::Date {
                 day: DaySpec::Exact(date),
                 time: Some(time),
             };
             if let Err(problem) = window.service.preview_schedule(&schedule, &Local) {
-                show_inline_error(&error, &localized_service_error(&problem));
-                return;
+                return Err(localized_service_error(&problem));
             }
             if let Some(entry_id) = apply_editor.entry_id
                 && apply_editor.reminder_id.is_some()
             {
                 let parsed = parse_english(&apply_editor.text());
                 if !window.flush_canvas() {
-                    return;
+                    return Err(gettextrs::gettext("Could not save canvas changes"));
                 }
                 match window.service.commit_canvas_edit(
                     entry_id,
@@ -1031,20 +1019,46 @@ impl MainWindow {
                     &Local,
                 ) {
                     Ok(_) => window.after_mutation(),
-                    Err(problem) => {
-                        show_inline_error(&error, &localized_service_error(&problem));
-                        return;
-                    }
+                    Err(problem) => return Err(localized_service_error(&problem)),
                 }
             } else {
                 window.replace_schedule_text(&apply_editor, &canonical_custom_phrase(date, time));
             }
-            if let Some(popover) = apply_popover.upgrade() {
-                popover.popdown();
-            }
+            Ok(())
         });
-        popover.popup();
-        *self.custom_popover.borrow_mut() = Some(popover);
+        let weak = Rc::downgrade(self);
+        let closed_picker = Rc::downgrade(&picker);
+        picker.connect_closed(move || {
+            let (Some(window), Some(picker)) = (weak.upgrade(), closed_picker.upgrade()) else {
+                return;
+            };
+            let mut current = window.custom_popover.borrow_mut();
+            if current
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(current, &picker))
+            {
+                current.take();
+            }
+            drop(current);
+            picker.unparent();
+        });
+        let anchor_editor = Rc::downgrade(&editor);
+        picker.popup_at(&editor.input, &anchor, move || {
+            anchor_editor.upgrade().map(|editor| {
+                anchor_offset.map_or_else(
+                    || editor.cursor_anchor_rect(),
+                    |offset| editor.anchor_rect_at_offset(offset),
+                )
+            })
+        });
+        *self.custom_popover.borrow_mut() = Some(picker);
+    }
+
+    fn dismiss_custom_popover(&self) {
+        let picker = self.custom_popover.borrow_mut().take();
+        if let Some(picker) = picker {
+            picker.popdown_and_unparent();
+        }
     }
 
     fn rebuild_active(&self, reminders: Vec<Reminder>) {
@@ -1337,6 +1351,12 @@ impl MainWindow {
             .map(|slot| slot.editor.clone())
     }
 
+    fn editor_is_focused(&self, editor: &CanvasEditor) -> bool {
+        gtk::prelude::GtkWindowExt::focus(&self.widgets.window)
+            .as_ref()
+            .is_some_and(|focused| focused == editor.input.upcast_ref::<gtk::Widget>())
+    }
+
     fn focus_after_rebuild(&self, previous: Option<(Option<Uuid>, i32)>, fallback_to_draft: bool) {
         let requested = self.reminder_to_focus.take();
         let slots = self.slots.borrow();
@@ -1392,18 +1412,6 @@ impl MainWindow {
                 editor.input.grab_focus();
             });
         }
-    }
-
-    fn update_placeholder(&self) {
-        let slots = self.slots.borrow();
-        let has_saved = slots.iter().any(|slot| slot.item.is_some());
-        let draft_empty = slots
-            .iter()
-            .find(|slot| slot.item.is_none())
-            .is_none_or(|slot| slot.editor.text().trim().is_empty());
-        self.widgets
-            .canvas_placeholder
-            .set_visible(!has_saved && draft_empty);
     }
 
     fn after_mutation(self: &Rc<Self>) {

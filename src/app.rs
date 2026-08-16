@@ -23,6 +23,74 @@ pub enum HoldChange {
     Release,
 }
 
+#[derive(Debug, Default)]
+pub struct RuntimeWarningState {
+    reported: HashSet<String>,
+    pending: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeWarningAction {
+    Ignore,
+    LogOnly,
+    LogAndShow,
+}
+
+impl RuntimeWarningState {
+    pub fn report_notification_warning(
+        &mut self,
+        message: &str,
+        has_window: bool,
+    ) -> RuntimeWarningAction {
+        if !self.reported.insert(message.to_owned()) {
+            return RuntimeWarningAction::Ignore;
+        }
+        if has_window {
+            RuntimeWarningAction::LogAndShow
+        } else {
+            self.pending.push(message.to_owned());
+            RuntimeWarningAction::LogOnly
+        }
+    }
+
+    pub fn report_notification_error(
+        &mut self,
+        error: &NotificationError,
+        has_window: bool,
+    ) -> (RuntimeWarningAction, String) {
+        let (action, message) = match error {
+            NotificationError::MissingDesktopEntry { .. } => {
+                let message = gettextrs::gettext(DESKTOP_METADATA_WARNING);
+                (
+                    self.report_notification_warning(&message, has_window),
+                    message,
+                )
+            }
+            _ => {
+                let message = error.to_string();
+                (self.report_runtime_error(&message, has_window), message)
+            }
+        };
+        (action, message)
+    }
+
+    pub fn report_runtime_error(
+        &mut self,
+        _message: &str,
+        has_window: bool,
+    ) -> RuntimeWarningAction {
+        if has_window {
+            RuntimeWarningAction::LogAndShow
+        } else {
+            RuntimeWarningAction::LogOnly
+        }
+    }
+
+    pub fn take_pending(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 pub fn run() -> glib::ExitCode {
     initialize_gettext();
     initialize_logging();
@@ -62,6 +130,7 @@ struct AppRuntime {
     timer: RefCell<Option<glib::SourceId>>,
     background_hold: RefCell<BackgroundHold>,
     hold_guard: RefCell<Option<gio::ApplicationHoldGuard>>,
+    runtime_warnings: RefCell<RuntimeWarningState>,
 }
 
 impl AppRuntime {
@@ -75,6 +144,7 @@ impl AppRuntime {
         let notifier = Rc::new(GioReminderNotifier::new(
             application.clone().upcast::<gio::Application>(),
         ));
+        let availability_error = notifier.availability().err();
         let service = Rc::new(ReminderService::new(repository, clock, notifier));
         let runtime = Rc::new(Self {
             application: application.clone(),
@@ -83,8 +153,12 @@ impl AppRuntime {
             timer: RefCell::new(None),
             background_hold: RefCell::new(BackgroundHold::default()),
             hold_guard: RefCell::new(None),
+            runtime_warnings: RefCell::new(RuntimeWarningState::default()),
         });
         runtime.install_actions();
+        if let Some(error) = availability_error {
+            runtime.report_notification_error(&error);
+        }
         runtime.refresh_scheduler();
         Ok(runtime)
     }
@@ -102,7 +176,7 @@ impl AppRuntime {
             match runtime.service.complete_target(&target) {
                 Ok(ActionOutcome::Applied) => runtime.reconcile_after_mutation(),
                 Ok(ActionOutcome::Ignored) => {}
-                Err(error) => runtime.report_runtime_error(&error.to_string()),
+                Err(error) => runtime.report_service_error(&error),
             }
         });
         self.application.add_action(&done);
@@ -119,7 +193,7 @@ impl AppRuntime {
             match runtime.service.snooze_target(&target) {
                 Ok(ActionOutcome::Applied) => runtime.reconcile_after_mutation(),
                 Ok(ActionOutcome::Ignored) => {}
-                Err(error) => runtime.report_runtime_error(&error.to_string()),
+                Err(error) => runtime.report_service_error(&error),
             }
         });
         self.application.add_action(&snooze);
@@ -136,7 +210,7 @@ impl AppRuntime {
             match runtime.service.resolve_active_target(&target) {
                 Ok(Some(id)) => runtime.show_reminder(id),
                 Ok(None) => {}
-                Err(error) => runtime.report_runtime_error(&error.to_string()),
+                Err(error) => runtime.report_service_error(&error),
             }
         });
         self.application.add_action(&show);
@@ -191,6 +265,7 @@ impl AppRuntime {
             Ok(window) => {
                 window.present();
                 self.window.borrow_mut().replace(window);
+                self.show_pending_runtime_warnings();
             }
             Err(error) => show_startup_error(&self.application, &error.to_string()),
         }
@@ -220,14 +295,18 @@ impl AppRuntime {
     }
 
     fn refresh_scheduler(self: &Rc<Self>) {
-        if let Err(error) = self.service.refresh() {
-            self.report_runtime_error(&error.to_string());
-        }
+        let refresh_succeeded = match self.service.refresh() {
+            Ok(_) => true,
+            Err(error) => {
+                self.report_service_error(&error);
+                false
+            }
+        };
         if let Some(window) = self.window.borrow().as_ref() {
             window.refresh();
         }
         self.update_background_hold();
-        self.reschedule();
+        self.reschedule(refresh_succeeded);
     }
 
     fn reconcile_after_mutation(self: &Rc<Self>) {
@@ -235,14 +314,14 @@ impl AppRuntime {
             window.refresh();
         }
         self.update_background_hold();
-        self.reschedule();
+        self.reschedule(true);
     }
 
     fn update_background_hold(&self) {
         let should_hold = match self.service.should_hold_background() {
             Ok(value) => value,
             Err(error) => {
-                self.report_runtime_error(&error.to_string());
+                self.report_service_error(&error);
                 true
             }
         };
@@ -258,18 +337,23 @@ impl AppRuntime {
         }
     }
 
-    fn reschedule(self: &Rc<Self>) {
+    fn reschedule(self: &Rc<Self>, refresh_succeeded: bool) {
         if let Some(source) = self.timer.borrow_mut().take() {
             source.remove();
         }
-        let next_due = match self.service.next_due() {
-            Ok(next_due) => next_due,
-            Err(error) => {
-                self.report_runtime_error(&error.to_string());
-                None
+        let next_due = if refresh_succeeded {
+            match self.service.next_due() {
+                Ok(next_due) => next_due,
+                Err(error) => {
+                    self.report_service_error(&error);
+                    None
+                }
             }
+        } else {
+            None
         };
-        let delay = wakeup_delay(Utc::now(), next_due).max(Duration::from_millis(50));
+        let delay = refresh_wakeup_delay(refresh_succeeded, Utc::now(), next_due)
+            .max(Duration::from_millis(50));
         let weak = Rc::downgrade(self);
         let source = glib::timeout_add_local_once(delay, move || {
             if let Some(runtime) = weak.upgrade() {
@@ -281,9 +365,56 @@ impl AppRuntime {
     }
 
     fn report_runtime_error(&self, message: &str) {
-        warn!(message, "reminder operation failed");
+        let has_window = self.window.borrow().is_some();
+        match self
+            .runtime_warnings
+            .borrow_mut()
+            .report_runtime_error(message, has_window)
+        {
+            RuntimeWarningAction::Ignore => {}
+            RuntimeWarningAction::LogOnly => warn!(message, "reminder operation failed"),
+            RuntimeWarningAction::LogAndShow => {
+                warn!(message, "reminder operation failed");
+                if let Some(window) = self.window.borrow().as_ref() {
+                    window.show_error_message(message);
+                }
+            }
+        }
+    }
+
+    fn report_notification_error(&self, error: &NotificationError) {
+        let has_window = self.window.borrow().is_some();
+        let (action, message) = self
+            .runtime_warnings
+            .borrow_mut()
+            .report_notification_error(error, has_window);
+        match action {
+            RuntimeWarningAction::Ignore => {}
+            RuntimeWarningAction::LogOnly => warn!(message, "reminder operation failed"),
+            RuntimeWarningAction::LogAndShow => {
+                warn!(message, "reminder operation failed");
+                if let Some(window) = self.window.borrow().as_ref() {
+                    window.show_error_message(&message);
+                }
+            }
+        }
+    }
+
+    fn report_service_error(&self, error: &ServiceError) {
+        match error {
+            ServiceError::Scheduler(SchedulerError::Notification(notification_error)) => {
+                self.report_notification_error(notification_error)
+            }
+            _ => self.report_runtime_error(&error.to_string()),
+        }
+    }
+
+    fn show_pending_runtime_warnings(&self) {
+        let pending = self.runtime_warnings.borrow_mut().take_pending();
         if let Some(window) = self.window.borrow().as_ref() {
-            window.show_error_message(message);
+            for message in pending {
+                window.show_error_message(&message);
+            }
         }
     }
 }
@@ -346,7 +477,7 @@ enum AppStartupError {
     #[error("Could not open the reminder database: {0}")]
     Database(#[from] crate::repository::RepositoryError),
 }
-use std::{cell::RefCell, fs, rc::Rc, time::Duration};
+use std::{cell::RefCell, collections::HashSet, fs, rc::Rc, time::Duration};
 
 use adw::prelude::*;
 use chrono::Utc;
@@ -360,10 +491,14 @@ use crate::{
     notifications::GioReminderNotifier,
     repository::SqliteReminderRepository,
     resources,
-    scheduler::{SystemClock, wakeup_delay},
-    service::{ActionOutcome, ReminderService},
+    scheduler::{
+        NotificationError, ReminderNotifier, SchedulerError, SystemClock, refresh_wakeup_delay,
+    },
+    service::{ActionOutcome, ReminderService, ServiceError},
     ui::MainWindow,
 };
 
 pub const APPLICATION_ID: &str = "io.github.wuzi.RemindMe";
 pub(crate) const GETTEXT_PACKAGE: &str = "remind-me";
+
+const DESKTOP_METADATA_WARNING: &str = "Notifications are unavailable in this development run. Install Remind Me to receive reminders.";

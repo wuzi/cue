@@ -11,6 +11,7 @@ chrono = { version = "0.4.45", features = ["clock"] }
 chrono-tz = "0.10.4"
 gettext-rs = { version = "0.8.0", features = ["gettext-system"] }
 gio = "0.22.8"
+gio-unix = "0.22.8"
 glib = "0.22.8"
 gtk = { package = "gtk4", version = "0.11.4", features = ["gnome_50", "blueprint"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }

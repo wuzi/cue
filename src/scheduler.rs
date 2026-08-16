@@ -22,6 +22,10 @@ impl Clock for SystemClock {
 }
 
 pub trait ReminderNotifier {
+    fn availability(&self) -> Result<(), NotificationError> {
+        Ok(())
+    }
+
     fn send(&self, id: &str, reminder: &Reminder) -> Result<(), NotificationError>;
     fn withdraw(&self, id: &str);
 }
@@ -85,9 +89,8 @@ pub fn stable_notification_id(id: Uuid) -> String {
 }
 
 pub fn wakeup_delay(now: DateTime<Utc>, next_due: Option<DateTime<Utc>>) -> std::time::Duration {
-    let safety_check = std::time::Duration::from_secs(30);
     let Some(next_due) = next_due else {
-        return safety_check;
+        return SAFETY_CHECK_INTERVAL;
     };
     if next_due <= now {
         return std::time::Duration::ZERO;
@@ -95,7 +98,21 @@ pub fn wakeup_delay(now: DateTime<Utc>, next_due: Option<DateTime<Utc>>) -> std:
     (next_due - now)
         .to_std()
         .unwrap_or(std::time::Duration::ZERO)
-        .min(safety_check)
+        .min(SAFETY_CHECK_INTERVAL)
+}
+
+pub const SAFETY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub fn refresh_wakeup_delay(
+    refresh_succeeded: bool,
+    now: DateTime<Utc>,
+    next_due: Option<DateTime<Utc>>,
+) -> std::time::Duration {
+    if refresh_succeeded {
+        wakeup_delay(now, next_due)
+    } else {
+        SAFETY_CHECK_INTERVAL
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,8 +123,18 @@ pub struct RefreshResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NotificationError {
+    #[error("desktop entry is not installed: {desktop_id}")]
+    MissingDesktopEntry { desktop_id: String },
     #[error("notification service unavailable: {0}")]
     Unavailable(String),
+}
+
+impl NotificationError {
+    pub fn missing_desktop_entry() -> Self {
+        Self::MissingDesktopEntry {
+            desktop_id: crate::notifications::REMIND_ME_DESKTOP_ID.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]

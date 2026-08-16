@@ -1,8 +1,20 @@
 use chrono::{Duration, TimeZone, Utc};
 use remind_me::{
+    app::{RuntimeWarningAction, RuntimeWarningState},
     model::{NewReminder, Reminder},
-    notifications::NotificationSpec,
+    notifications::{NotificationSpec, REMIND_ME_DESKTOP_ID},
+    scheduler::{NotificationError, ReminderNotifier},
 };
+
+struct NoopNotifier;
+
+impl ReminderNotifier for NoopNotifier {
+    fn send(&self, _id: &str, _reminder: &Reminder) -> Result<(), NotificationError> {
+        Ok(())
+    }
+
+    fn withdraw(&self, _id: &str) {}
+}
 
 #[test]
 fn notification_spec_keeps_all_actions_available_outside_the_window() {
@@ -23,4 +35,60 @@ fn notification_spec_keeps_all_actions_available_outside_the_window() {
             .collect::<Vec<_>>(),
         vec![("Done", "app.done"), ("Snooze 10 min", "app.snooze")]
     );
+}
+
+#[test]
+fn notifier_availability_defaults_to_available_for_existing_fakes() {
+    assert_eq!(NoopNotifier.availability(), Ok(()));
+}
+
+#[test]
+fn missing_desktop_entry_error_carries_the_remind_me_desktop_id() {
+    assert_eq!(
+        NotificationError::missing_desktop_entry(),
+        NotificationError::MissingDesktopEntry {
+            desktop_id: REMIND_ME_DESKTOP_ID.to_owned(),
+        }
+    );
+}
+
+#[test]
+fn notification_diagnostics_are_deduplicated_but_runtime_errors_are_not() {
+    let mut warnings = RuntimeWarningState::default();
+    let message = "Notifications are unavailable in this development run. Install Remind Me to receive reminders.";
+
+    assert_eq!(
+        warnings.report_notification_warning(message, false),
+        RuntimeWarningAction::LogOnly
+    );
+    assert_eq!(
+        warnings.report_notification_warning(message, false),
+        RuntimeWarningAction::Ignore
+    );
+    assert_eq!(warnings.take_pending(), vec![message]);
+    let unavailable = NotificationError::Unavailable("test notification service".into());
+    assert_eq!(
+        warnings.report_notification_error(&unavailable, false),
+        (
+            RuntimeWarningAction::LogOnly,
+            "notification service unavailable: test notification service".into(),
+        )
+    );
+    assert_eq!(
+        warnings.report_notification_error(&unavailable, false),
+        (
+            RuntimeWarningAction::LogOnly,
+            "notification service unavailable: test notification service".into(),
+        )
+    );
+    assert!(warnings.take_pending().is_empty());
+    assert_eq!(
+        warnings.report_runtime_error("database write failed", false),
+        RuntimeWarningAction::LogOnly
+    );
+    assert_eq!(
+        warnings.report_runtime_error("database write failed", false),
+        RuntimeWarningAction::LogOnly
+    );
+    assert!(warnings.take_pending().is_empty());
 }

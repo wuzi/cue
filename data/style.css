@@ -52,3 +52,19 @@ textview.canvas-draft text {
 .reminder-row:focus-within .row-controls {
   opacity: 1;
 }
+
+.reminder-picker calendar.reminder-calendar,
+.reminder-picker calendar.reminder-calendar.view {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.reminder-picker-summary {
+  padding: 2px 4px;
+}
+
+.reminder-picker-shortcuts,
+.reminder-picker-time {
+  margin: 0 2px;
+}

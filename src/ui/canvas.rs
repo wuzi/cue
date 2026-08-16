@@ -163,6 +163,38 @@ impl CanvasEditor {
             .to_string()
     }
 
+    pub fn cursor_anchor_rect(&self) -> gtk::gdk::Rectangle {
+        self.anchor_rect(None)
+    }
+
+    pub fn anchor_rect_at_offset(&self, offset: i32) -> gtk::gdk::Rectangle {
+        let buffer = self.input.buffer();
+        let offset = offset.clamp(0, buffer.char_count());
+        self.anchor_rect(Some(&buffer.iter_at_offset(offset)))
+    }
+
+    pub fn iter_at_widget_location(&self, x: i32, y: i32) -> Option<gtk::TextIter> {
+        let (buffer_x, buffer_y) =
+            self.input
+                .window_to_buffer_coords(gtk::TextWindowType::Widget, x, y);
+        self.input.iter_at_location(buffer_x, buffer_y)
+    }
+
+    fn anchor_rect(&self, iter: Option<&gtk::TextIter>) -> gtk::gdk::Rectangle {
+        let buffer = self.input.buffer();
+        let validation_iter = iter
+            .cloned()
+            .unwrap_or_else(|| buffer.iter_at_offset(buffer.cursor_position()));
+        // Force the text layout to validate after wrapping or line changes before
+        // asking for the strong cursor rectangle.
+        let _ = self.input.iter_location(&validation_iter);
+        let (strong, _) = self.input.cursor_locations(iter);
+        let (x, y) =
+            self.input
+                .buffer_to_window_coords(gtk::TextWindowType::Widget, strong.x(), strong.y());
+        gtk::gdk::Rectangle::new(x, y, strong.width().max(1), strong.height().max(1))
+    }
+
     pub fn apply_schedule_span(&self, input: &str, span: Option<Range<usize>>, saved: bool) {
         let buffer = self.input.buffer();
         let start = buffer.start_iter();

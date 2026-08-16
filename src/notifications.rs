@@ -6,6 +6,16 @@ use crate::{
     scheduler::{NotificationError, ReminderNotifier},
 };
 
+pub const REMIND_ME_DESKTOP_ID: &str = "io.github.wuzi.RemindMe.desktop";
+
+fn desktop_entry_availability(
+    desktop_entry: Option<gio_unix::DesktopAppInfo>,
+) -> Result<(), NotificationError> {
+    desktop_entry
+        .map(|_| ())
+        .ok_or_else(NotificationError::missing_desktop_entry)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationButton {
     pub label: String,
@@ -53,7 +63,12 @@ impl GioReminderNotifier {
 }
 
 impl ReminderNotifier for GioReminderNotifier {
+    fn availability(&self) -> Result<(), NotificationError> {
+        desktop_entry_availability(gio_unix::DesktopAppInfo::new(REMIND_ME_DESKTOP_ID))
+    }
+
     fn send(&self, id: &str, reminder: &Reminder) -> Result<(), NotificationError> {
+        self.availability()?;
         let spec = NotificationSpec::for_reminder(reminder);
         let target = spec.target.to_variant();
         let notification = gio::Notification::new(&spec.title);
@@ -69,5 +84,21 @@ impl ReminderNotifier for GioReminderNotifier {
 
     fn withdraw(&self, id: &str) {
         self.application.withdraw_notification(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REMIND_ME_DESKTOP_ID, desktop_entry_availability};
+    use crate::scheduler::NotificationError;
+
+    #[test]
+    fn unavailable_desktop_entry_returns_the_typed_missing_entry_error() {
+        assert_eq!(
+            desktop_entry_availability(None),
+            Err(NotificationError::MissingDesktopEntry {
+                desktop_id: REMIND_ME_DESKTOP_ID.to_owned(),
+            })
+        );
     }
 }

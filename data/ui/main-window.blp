@@ -48,27 +48,14 @@ Adw.ApplicationWindow main_window {
               maximum-size: 720;
               tightening-threshold: 480;
 
-              child: Gtk.Overlay {
-                child: Gtk.Box canvas_entries {
-                  orientation: vertical;
-                  spacing: 2;
-                  vexpand: true;
-                  margin-top: 18;
-                  margin-bottom: 24;
-                  margin-start: 20;
-                  margin-end: 20;
-                };
-
-                [overlay]
-                Gtk.Label canvas_placeholder {
-                  label: _("Write a note…");
-                  halign: start;
-                  valign: start;
-                  margin-top: 28;
-                  margin-start: 28;
-                  can-target: false;
-                  styles ["dim-label"]
-                }
+              child: Gtk.Box canvas_entries {
+                orientation: vertical;
+                spacing: 2;
+                vexpand: true;
+                margin-top: 18;
+                margin-bottom: 24;
+                margin-start: 20;
+                margin-end: 20;
               };
             };
           };

@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::{cell::Cell, ops::Deref};
 
 use adw::prelude::*;
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use remind_me::{
     model::{CanvasEntry, DeletedCanvasItem, Reminder},
     repository::{ReminderRepository, RepositoryError, SqliteReminderRepository},
@@ -178,7 +178,7 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
         widgets.active_list_button.icon_name().as_deref(),
         Some("view-list-symbolic")
     );
-    assert_eq!(widgets.canvas_placeholder.label(), "Write a note…");
+    assert!(find_label_containing(widgets.window.upcast_ref(), "Write a note").is_none());
     assert!(find_icon_button(widgets.window.upcast_ref(), "list-add-symbolic").is_none());
     assert!(find_css_class(widgets.window.upcast_ref(), "schedule-preview").is_none());
 
@@ -199,6 +199,101 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
         .unwrap();
     assert_eq!(draft.wrap_mode(), gtk::WrapMode::WordChar);
     assert!(!draft.accepts_tab());
+    draft.grab_focus();
+    drain_main_context();
+    assert!(window_focuses(window.widget(), draft.upcast_ref()));
+    draft.buffer().set_text("Schedule @");
+    drain_main_context();
+    let suggestions = find_css_class(window.widget().upcast_ref(), "schedule-suggestions")
+        .expect("schedule suggestions")
+        .downcast::<gtk::Popover>()
+        .unwrap();
+    let (has_anchor, anchor) = suggestions.pointing_to();
+    assert!(has_anchor, "suggestions must point to the text caret");
+    assert!(
+        anchor.y() < draft.height() / 2,
+        "the first-line anchor must not use the expanding editor's bottom edge"
+    );
+    let active_list_button =
+        find_icon_button(window.widget().upcast_ref(), "view-list-symbolic").unwrap();
+    active_list_button.grab_focus();
+    wait_until(|| find_css_class(window.widget().upcast_ref(), "schedule-suggestions").is_none());
+    assert!(
+        find_css_class(window.widget().upcast_ref(), "schedule-suggestions").is_none(),
+        "suggestions must close when focus leaves their editor"
+    );
+    draft.grab_focus();
+    draft.buffer().set_text("Schedule");
+    draft.buffer().set_text("Schedule @");
+    drain_main_context();
+    draft.buffer().set_text("First line\nSchedule @");
+    draft.buffer().place_cursor(&draft.buffer().end_iter());
+    wait_until(|| {
+        find_css_class(window.widget().upcast_ref(), "schedule-suggestions")
+            .and_then(|widget| widget.downcast::<gtk::Popover>().ok())
+            .is_some_and(|popover| popover.pointing_to().1.y() > anchor.y())
+    });
+    let suggestions = find_css_class(window.widget().upcast_ref(), "schedule-suggestions")
+        .unwrap()
+        .downcast::<gtk::Popover>()
+        .unwrap();
+    let multiline_anchor = suggestions.pointing_to().1;
+    assert!(
+        multiline_anchor.y() > anchor.y(),
+        "the suggestion anchor must follow the caret onto later lines"
+    );
+    draft
+        .buffer()
+        .set_text("Schedule this reminder after changing the available width with several words @");
+    draft.buffer().place_cursor(&draft.buffer().end_iter());
+    drain_main_context();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    drain_main_context();
+    let suggestions = find_css_class(window.widget().upcast_ref(), "schedule-suggestions")
+        .unwrap()
+        .downcast::<gtk::Popover>()
+        .unwrap();
+    let wide_anchor = suggestions.pointing_to().1;
+    let draft_row = draft.parent().unwrap();
+    draft_row.set_width_request(180);
+    draft_row.set_halign(gtk::Align::Start);
+    wait_until(|| draft.width() <= 180);
+    assert!(draft.width() <= 180, "the test editor must reflow");
+    wait_until(|| suggestions.pointing_to().1.y() > wide_anchor.y());
+    assert!(
+        suggestions.pointing_to().1.y() > wide_anchor.y(),
+        "the suggestion anchor must follow allocation-driven word wrapping"
+    );
+    draft_row.set_width_request(-1);
+    draft_row.set_halign(gtk::Align::Fill);
+    wait_until(|| draft.width() > 300);
+    assert!(draft.width() > 300, "the test editor must expand again");
+    let suggestions = find_css_class(window.widget().upcast_ref(), "schedule-suggestions")
+        .unwrap()
+        .downcast::<gtk::Popover>()
+        .unwrap();
+    let suggestion_list = find_descendant::<gtk::ListBox>(suggestions.upcast_ref()).unwrap();
+    let custom_row = suggestion_list.row_at_index(5).unwrap();
+    suggestion_list.emit_by_name::<()>("row-activated", &[&custom_row]);
+    drain_main_context();
+    let picker = find_calendar_popover(window.widget().upcast_ref()).expect("draft picker");
+    let wide_picker_anchor = picker.pointing_to().1;
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    drain_main_context();
+    draft_row.set_width_request(180);
+    draft_row.set_halign(gtk::Align::Start);
+    wait_until(|| draft.width() <= 180);
+    wait_until(|| picker.pointing_to().1.y() > wide_picker_anchor.y());
+    assert!(
+        picker.pointing_to().1.y() > wide_picker_anchor.y(),
+        "the custom picker anchor must follow allocation-driven word wrapping"
+    );
+    find_button_with_label(picker.upcast_ref(), "Cancel")
+        .unwrap()
+        .emit_clicked();
+    draft_row.set_width_request(-1);
+    draft_row.set_halign(gtk::Align::Fill);
+    drain_main_context();
     draft.buffer().set_text("A plain note");
     gtk::prelude::WidgetExt::activate_action(window.widget(), "win.commit-canvas", None).unwrap();
     drain_main_context();
@@ -397,7 +492,109 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
     )
     .unwrap();
     drain_main_context();
-    assert!(find_calendar_popover(window.widget().upcast_ref()).is_some());
+    let picker = find_calendar_popover(window.widget().upcast_ref()).expect("schedule picker");
+    assert!(picker.has_css_class("reminder-picker"));
+    assert!(!picker.has_css_class("menu"));
+    let calendar = find_descendant::<gtk::Calendar>(picker.upcast_ref()).unwrap();
+    assert!(calendar.has_css_class("reminder-calendar"));
+    assert!(
+        picker.pointing_to().0,
+        "the picker must point to its source text"
+    );
+    for label in ["Today", "Tomorrow", "Time", "Cancel", "Apply"] {
+        assert!(
+            find_label_exact(picker.upcast_ref(), label).is_some(),
+            "missing picker control {label}"
+        );
+    }
+    let tomorrow = now.with_timezone(&Local).date_naive().succ_opt().unwrap();
+    find_button_with_label(picker.upcast_ref(), "Tomorrow")
+        .unwrap()
+        .emit_clicked();
+    drain_main_context();
+    let selected = calendar.date();
+    assert_eq!(
+        (selected.year(), selected.month(), selected.day_of_month()),
+        (
+            tomorrow.year(),
+            tomorrow.month() as i32,
+            tomorrow.day() as i32
+        )
+    );
+    let registered_text = buffer_text(&registered.buffer()).to_string();
+    find_button_with_label(picker.upcast_ref(), "Cancel")
+        .unwrap()
+        .emit_clicked();
+    drain_main_context();
+    assert_eq!(buffer_text(&registered.buffer()), registered_text);
+    assert!(
+        picker.parent().is_none(),
+        "a canceled picker must detach from its editor"
+    );
+    assert!(
+        find_calendar_popover(window.widget().upcast_ref()).is_none(),
+        "a canceled picker must leave the window hierarchy"
+    );
+    window.refresh();
+    drain_main_context();
+    assert_eq!(buffer_text(&registered.buffer()), registered_text);
+
+    gtk::prelude::WidgetExt::activate_action(
+        window.widget(),
+        "win.custom-time",
+        Some(&scheduled_entry.id.to_string().to_variant()),
+    )
+    .unwrap();
+    drain_main_context();
+    let picker = find_calendar_popover(window.widget().upcast_ref()).unwrap();
+    let calendar = find_descendant::<gtk::Calendar>(picker.upcast_ref()).unwrap();
+    let yesterday = now.with_timezone(&Local).date_naive().pred_opt().unwrap();
+    calendar.set_date(
+        &glib::DateTime::new(
+            &glib::TimeZone::local(),
+            yesterday.year(),
+            yesterday.month() as i32,
+            yesterday.day() as i32,
+            12,
+            0,
+            0.0,
+        )
+        .unwrap(),
+    );
+    let due_before_invalid_apply = repository.get(reminders[0].id).unwrap().due_at;
+    find_button_with_label(picker.upcast_ref(), "Apply")
+        .unwrap()
+        .emit_clicked();
+    drain_main_context();
+    assert!(find_label_containing(picker.upcast_ref(), "future").is_some());
+    assert_eq!(
+        repository.get(reminders[0].id).unwrap().due_at,
+        due_before_invalid_apply
+    );
+    find_button_with_label(picker.upcast_ref(), "Tomorrow")
+        .unwrap()
+        .emit_clicked();
+    find_button_with_label(picker.upcast_ref(), "Apply")
+        .unwrap()
+        .emit_clicked();
+    drain_main_context();
+    assert_eq!(
+        repository
+            .get(reminders[0].id)
+            .unwrap()
+            .due_at
+            .with_timezone(&Local)
+            .date_naive(),
+        tomorrow
+    );
+    assert!(
+        picker.parent().is_none(),
+        "an applied picker must detach from its editor"
+    );
+    assert!(
+        find_calendar_popover(window.widget().upcast_ref()).is_none(),
+        "an applied picker must leave the window hierarchy"
+    );
 
     gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-active-list", None)
         .unwrap();
@@ -407,7 +604,7 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
         navigation.visible_page_tag().as_deref(),
         Some("active-list")
     );
-    assert!(find_action_row(window.widget().upcast_ref(), "Call Ada").is_some());
+    assert!(find_action_row(window.widget().upcast_ref(), "Call Ada changed").is_some());
     assert!(navigation.pop());
     gtk::prelude::WidgetExt::activate_action(window.widget(), "win.show-history", None).unwrap();
     drain_main_context();
@@ -462,6 +659,22 @@ fn find_label_containing(root: &gtk::Widget, needle: &str) -> Option<gtk::Label>
     None
 }
 
+fn find_label_exact(root: &gtk::Widget, expected: &str) -> Option<gtk::Label> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Ok(label) = widget.clone().downcast::<gtk::Label>()
+            && label.label() == expected
+        {
+            return Some(label);
+        }
+        if let Some(found) = find_label_exact(&widget, expected) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 fn find_icon_button(root: &gtk::Widget, icon_name: &str) -> Option<gtk::Button> {
     let mut child = root.first_child();
     while let Some(widget) = child {
@@ -471,6 +684,22 @@ fn find_icon_button(root: &gtk::Widget, icon_name: &str) -> Option<gtk::Button> 
             return Some(button);
         }
         if let Some(found) = find_icon_button(&widget, icon_name) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn find_button_with_label(root: &gtk::Widget, expected: &str) -> Option<gtk::Button> {
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Ok(button) = widget.clone().downcast::<gtk::Button>()
+            && button.label().as_deref() == Some(expected)
+        {
+            return Some(button);
+        }
+        if let Some(found) = find_button_with_label(&widget, expected) {
             return Some(found);
         }
         child = widget.next_sibling();
@@ -533,6 +762,14 @@ fn window_focuses(window: &adw::ApplicationWindow, widget: &gtk::Widget) -> bool
 
 fn drain_main_context() {
     while glib::MainContext::default().iteration(false) {}
+}
+
+fn wait_until(predicate: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while !predicate() && std::time::Instant::now() < deadline {
+        drain_main_context();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 fn find_descendant<T>(root: &gtk::Widget) -> Option<T>

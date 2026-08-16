@@ -27,6 +27,23 @@ meson compile -C build
 ./build/remind-me
 ```
 
+`cargo run` and `./build/remind-me` are convenient for interface and storage
+development, but they do not install the desktop metadata GNOME requires for
+notifications. Remind Me warns about this instead of treating an undeliverable
+notification as delivered.
+
+For end-to-end native notification testing, install the development build for
+your user and launch the installed application:
+
+```sh
+meson setup --reconfigure build --prefix="$HOME/.local"
+meson compile -C build
+meson install -C build
+"$HOME/.local/bin/remind-me"
+```
+
+The Flatpak workflow below also installs the required desktop metadata.
+
 On Fedora, the required packages are `rust`, `cargo`, `meson`,
 `blueprint-compiler`, `gtk4-devel`, `libadwaita-devel`, `gettext-devel`, and
 `sqlite-devel`.

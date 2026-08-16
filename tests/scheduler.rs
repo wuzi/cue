@@ -8,7 +8,8 @@ use remind_me::{
     model::{NewReminder, Reminder},
     repository::{ReminderRepository, SqliteReminderRepository},
     scheduler::{
-        Clock, NotificationError, ReminderNotifier, Scheduler, stable_notification_id, wakeup_delay,
+        Clock, NotificationError, ReminderNotifier, Scheduler, refresh_wakeup_delay,
+        stable_notification_id, wakeup_delay,
     },
 };
 
@@ -172,4 +173,14 @@ fn wakeup_delay_uses_exact_near_due_time_and_caps_the_safety_check() {
         std::time::Duration::ZERO
     );
     assert_eq!(wakeup_delay(now, None), std::time::Duration::from_secs(30));
+}
+
+#[test]
+fn failed_refresh_retries_on_the_thirty_second_safety_interval() {
+    let now = at(1_800_000_000);
+
+    assert_eq!(
+        refresh_wakeup_delay(false, now, Some(now - Duration::minutes(1))),
+        std::time::Duration::from_secs(30)
+    );
 }

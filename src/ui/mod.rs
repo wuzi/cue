@@ -1,5 +1,6 @@
 mod canvas;
 mod rows;
+mod schedule_picker;
 mod window;
 
 use adw::prelude::*;
@@ -17,7 +18,6 @@ pub struct WindowWidgets {
     pub active_list_button: gtk::Button,
     pub canvas_scroller: gtk::ScrolledWindow,
     pub canvas_entries: gtk::Box,
-    pub canvas_placeholder: gtk::Label,
     pub active_content: gtk::Stack,
     pub active_groups: gtk::Box,
     pub history_list: gtk::Box,
@@ -40,7 +40,6 @@ pub fn build_window(application: &adw::Application) -> Result<WindowWidgets, UiB
         active_list_button: object(&builder, "active_list_button")?,
         canvas_scroller: object(&builder, "canvas_scroller")?,
         canvas_entries: object(&builder, "canvas_entries")?,
-        canvas_placeholder: object(&builder, "canvas_placeholder")?,
         active_content: object(&builder, "active_content")?,
         active_groups: object(&builder, "active_groups")?,
         history_list: object(&builder, "history_list")?,
