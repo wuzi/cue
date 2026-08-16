@@ -1,4 +1,9 @@
-use remind_me::app::{BackgroundHold, HoldChange};
+use cue::app::{BackgroundHold, DATA_DIRECTORY_NAME, HoldChange};
+
+#[test]
+fn cue_uses_its_own_data_directory_name() {
+    assert_eq!(DATA_DIRECTORY_NAME, "cue");
+}
 
 #[test]
 fn background_hold_changes_only_when_pending_state_crosses_the_boundary() {

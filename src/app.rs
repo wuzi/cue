@@ -23,6 +23,8 @@ pub enum HoldChange {
     Release,
 }
 
+pub const DATA_DIRECTORY_NAME: &str = "cue";
+
 #[derive(Debug, Default)]
 pub struct RuntimeWarningState {
     reported: HashSet<String>,
@@ -135,7 +137,7 @@ struct AppRuntime {
 
 impl AppRuntime {
     fn new(application: &adw::Application) -> Result<Rc<Self>, AppStartupError> {
-        let data_directory = glib::user_data_dir().join("remind-me");
+        let data_directory = glib::user_data_dir().join(DATA_DIRECTORY_NAME);
         fs::create_dir_all(&data_directory)?;
         let repository = Rc::new(SqliteReminderRepository::open(
             data_directory.join("reminders.db"),
@@ -281,7 +283,7 @@ impl AppRuntime {
     fn show_about(self: &Rc<Self>) {
         self.show_window();
         let dialog = adw::AboutDialog::new();
-        dialog.set_application_name("Remind Me");
+        dialog.set_application_name("Cue");
         dialog.set_application_icon(APPLICATION_ID);
         dialog.set_developer_name("wuzi");
         dialog.set_version(env!("CARGO_PKG_VERSION"));
@@ -446,7 +448,7 @@ fn install_css() {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_resource("/io/github/wuzi/RemindMe/style.css");
+    provider.load_from_resource("/io/github/wuzi/Cue/style.css");
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
@@ -457,7 +459,7 @@ fn install_css() {
 fn show_startup_error(application: &adw::Application, message: &str) {
     let window = adw::ApplicationWindow::builder()
         .application(application)
-        .title("Remind Me")
+        .title("Cue")
         .default_width(520)
         .default_height(420)
         .build();
@@ -498,7 +500,8 @@ use crate::{
     ui::MainWindow,
 };
 
-pub const APPLICATION_ID: &str = "io.github.wuzi.RemindMe";
-pub(crate) const GETTEXT_PACKAGE: &str = "remind-me";
+pub const APPLICATION_ID: &str = "io.github.wuzi.Cue";
+pub(crate) const GETTEXT_PACKAGE: &str = "cue";
 
-const DESKTOP_METADATA_WARNING: &str = "Notifications are unavailable in this development run. Install Remind Me to receive reminders.";
+const DESKTOP_METADATA_WARNING: &str =
+    "Notifications are unavailable in this development run. Install Cue to receive reminders.";

@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use remind_me::{
+use cue::{
     model::{NewReminder, Reminder},
     repository::{ReminderRepository, SqliteReminderRepository},
     scheduler::{

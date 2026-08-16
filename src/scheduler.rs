@@ -132,7 +132,7 @@ pub enum NotificationError {
 impl NotificationError {
     pub fn missing_desktop_entry() -> Self {
         Self::MissingDesktopEntry {
-            desktop_id: crate::notifications::REMIND_ME_DESKTOP_ID.to_owned(),
+            desktop_id: crate::notifications::CUE_DESKTOP_ID.to_owned(),
         }
     }
 }

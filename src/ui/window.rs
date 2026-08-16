@@ -184,10 +184,7 @@ impl MainWindow {
             Some(&gettextrs::gettext("History")),
             Some("win.show-history"),
         );
-        menu.append(
-            Some(&gettextrs::gettext("About Remind Me")),
-            Some("app.about"),
-        );
+        menu.append(Some(&gettextrs::gettext("About Cue")), Some("app.about"));
         menu.append(Some(&gettextrs::gettext("Quit")), Some("app.quit"));
         self.widgets.menu_button.set_menu_model(Some(&menu));
     }

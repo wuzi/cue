@@ -1,14 +1,14 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the remind-me package.
+# This file is distributed under the same license as the cue package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
 #
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: remind-me\n"
+"Project-Id-Version: cue\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-15 21:10-0300\n"
+"POT-Creation-Date: 2026-08-15 21:39-0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -19,42 +19,42 @@ msgstr ""
 
 #. Translation catalog for Blueprint and Rust strings.
 #. * This file is used by xgettext and is not part of the application binary.
-#: data/io.github.wuzi.RemindMe.desktop:2
-#: data/io.github.wuzi.RemindMe.metainfo.xml:6 po/messages.c:3
-msgid "Remind Me"
+#: data/io.github.wuzi.Cue.desktop:2 data/io.github.wuzi.Cue.metainfo.xml:6
+#: po/messages.c:3
+msgid "Cue"
 msgstr ""
 
-#: data/io.github.wuzi.RemindMe.desktop:3
+#: data/io.github.wuzi.Cue.desktop:3
 msgid "Write notes and turn them into reminders"
 msgstr ""
 
-#: data/io.github.wuzi.RemindMe.desktop:9
+#: data/io.github.wuzi.Cue.desktop:9
 msgid "Reminder;Alarm;Note;Scratchpad;Notification;"
 msgstr ""
 
-#: data/io.github.wuzi.RemindMe.metainfo.xml:7
+#: data/io.github.wuzi.Cue.metainfo.xml:7
 msgid "Write notes and turn them into timely reminders"
 msgstr ""
 
-#: data/io.github.wuzi.RemindMe.metainfo.xml:9
+#: data/io.github.wuzi.Cue.metainfo.xml:9
 msgid ""
-"Remind Me is a focused scratchpad for quick notes and one-time reminders. "
-"Write directly on the canvas, then add an English schedule such as "
-"“@tomorrow 9am” when a note should notify you."
+"Cue is a focused scratchpad for quick notes and one-time reminders. Write "
+"directly on the canvas, then add an English schedule such as “@tomorrow 9am” "
+"when a note should notify you."
 msgstr ""
 
-#: data/io.github.wuzi.RemindMe.metainfo.xml:14
+#: data/io.github.wuzi.Cue.metainfo.xml:14
 msgid ""
 "Notes and reminders stay on your device. Complete or snooze reminders from "
 "the notification, review upcoming reminders by day, and keep a local history "
 "of completed items."
 msgstr ""
 
-#: data/io.github.wuzi.RemindMe.metainfo.xml:21
+#: data/io.github.wuzi.Cue.metainfo.xml:21
 msgid "wuzi"
 msgstr ""
 
-#: data/io.github.wuzi.RemindMe.metainfo.xml:36
+#: data/io.github.wuzi.Cue.metainfo.xml:36
 msgid ""
 "Initial release with a local note canvas, reminders, snoozing, and history."
 msgstr ""
@@ -140,7 +140,7 @@ msgid "Quit"
 msgstr ""
 
 #: po/messages.c:24
-msgid "About Remind Me"
+msgid "About Cue"
 msgstr ""
 
 #: po/messages.c:25
@@ -329,6 +329,6 @@ msgstr ""
 
 #: po/messages.c:71
 msgid ""
-"Notifications are unavailable in this development run. Install Remind Me to "
+"Notifications are unavailable in this development run. Install Cue to "
 "receive reminders."
 msgstr ""

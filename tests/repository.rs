@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use remind_me::{
+use cue::{
     model::{NewReminder, Reminder},
     repository::{ReminderRepository, RepositoryError, SqliteReminderRepository},
 };

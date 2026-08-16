@@ -1,4 +1,4 @@
 i18n.gettext(
-  'remind-me',
+  'cue',
   preset: 'glib',
 )

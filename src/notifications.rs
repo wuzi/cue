@@ -6,7 +6,7 @@ use crate::{
     scheduler::{NotificationError, ReminderNotifier},
 };
 
-pub const REMIND_ME_DESKTOP_ID: &str = "io.github.wuzi.RemindMe.desktop";
+pub const CUE_DESKTOP_ID: &str = "io.github.wuzi.Cue.desktop";
 
 fn desktop_entry_availability(
     desktop_entry: Option<gio_unix::DesktopAppInfo>,
@@ -64,7 +64,7 @@ impl GioReminderNotifier {
 
 impl ReminderNotifier for GioReminderNotifier {
     fn availability(&self) -> Result<(), NotificationError> {
-        desktop_entry_availability(gio_unix::DesktopAppInfo::new(REMIND_ME_DESKTOP_ID))
+        desktop_entry_availability(gio_unix::DesktopAppInfo::new(CUE_DESKTOP_ID))
     }
 
     fn send(&self, id: &str, reminder: &Reminder) -> Result<(), NotificationError> {
@@ -89,7 +89,7 @@ impl ReminderNotifier for GioReminderNotifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{REMIND_ME_DESKTOP_ID, desktop_entry_availability};
+    use super::{CUE_DESKTOP_ID, desktop_entry_availability};
     use crate::scheduler::NotificationError;
 
     #[test]
@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(
             desktop_entry_availability(None),
             Err(NotificationError::MissingDesktopEntry {
-                desktop_id: REMIND_ME_DESKTOP_ID.to_owned(),
+                desktop_id: CUE_DESKTOP_ID.to_owned(),
             })
         );
     }

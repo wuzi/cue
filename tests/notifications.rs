@@ -1,8 +1,8 @@
 use chrono::{Duration, TimeZone, Utc};
-use remind_me::{
+use cue::{
     app::{RuntimeWarningAction, RuntimeWarningState},
     model::{NewReminder, Reminder},
-    notifications::{NotificationSpec, REMIND_ME_DESKTOP_ID},
+    notifications::{CUE_DESKTOP_ID, NotificationSpec},
     scheduler::{NotificationError, ReminderNotifier},
 };
 
@@ -43,11 +43,11 @@ fn notifier_availability_defaults_to_available_for_existing_fakes() {
 }
 
 #[test]
-fn missing_desktop_entry_error_carries_the_remind_me_desktop_id() {
+fn missing_desktop_entry_error_carries_the_cue_desktop_id() {
     assert_eq!(
         NotificationError::missing_desktop_entry(),
         NotificationError::MissingDesktopEntry {
-            desktop_id: REMIND_ME_DESKTOP_ID.to_owned(),
+            desktop_id: CUE_DESKTOP_ID.to_owned(),
         }
     );
 }
@@ -55,7 +55,8 @@ fn missing_desktop_entry_error_carries_the_remind_me_desktop_id() {
 #[test]
 fn notification_diagnostics_are_deduplicated_but_runtime_errors_are_not() {
     let mut warnings = RuntimeWarningState::default();
-    let message = "Notifications are unavailable in this development run. Install Remind Me to receive reminders.";
+    let message =
+        "Notifications are unavailable in this development run. Install Cue to receive reminders.";
 
     assert_eq!(
         warnings.report_notification_warning(message, false),

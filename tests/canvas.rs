@@ -1,6 +1,6 @@
 use chrono::{TimeZone, Utc};
 use chrono_tz::America::New_York;
-use remind_me::{
+use cue::{
     canvas::{
         escape_message, format_schedule_suffix, normalize_registered_suffix,
         normalize_stored_working_suffix, normalize_working_after_due_change,

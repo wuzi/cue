@@ -14,4 +14,4 @@ esac
 cd "$source_directory"
 LOCALEDIR="$locale_directory" CARGO_TARGET_DIR="$target_directory" \
   cargo build --release --locked
-cp "$target_directory/release/remind-me" "$output_file"
+cp "$target_directory/release/cue" "$output_file"

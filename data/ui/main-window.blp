@@ -2,7 +2,7 @@ using Gtk 4.0;
 using Adw 1;
 
 Adw.ApplicationWindow main_window {
-  title: _("Remind Me");
+  title: _("Cue");
   default-width: 560;
   default-height: 540;
   width-request: 360;
@@ -11,7 +11,7 @@ Adw.ApplicationWindow main_window {
   content: Adw.ToastOverlay toast_overlay {
     child: Adw.NavigationView navigation_view {
       Adw.NavigationPage canvas_page {
-        title: _("Remind Me");
+        title: _("Cue");
         tag: "canvas";
 
         child: Adw.ToolbarView {
@@ -21,7 +21,10 @@ Adw.ApplicationWindow main_window {
             Gtk.Button active_list_button {
               icon-name: "view-list-symbolic";
               tooltip-text: _("Active Reminders");
-              styles ["flat"]
+
+              styles [
+                "flat",
+              ]
 
               accessibility {
                 label: _("Active Reminders");
@@ -29,8 +32,11 @@ Adw.ApplicationWindow main_window {
             }
 
             title-widget: Gtk.Label {
-              label: _("Remind Me");
-              styles ["title"]
+              label: _("Cue");
+
+              styles [
+                "title",
+              ]
             };
 
             [end]
@@ -119,7 +125,10 @@ Adw.ApplicationWindow main_window {
             Gtk.Button clear_history_button {
               icon-name: "edit-clear-all-symbolic";
               tooltip-text: _("Clear History");
-              styles ["flat"]
+
+              styles [
+                "flat",
+              ]
 
               accessibility {
                 label: _("Clear History");

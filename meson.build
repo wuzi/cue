@@ -1,5 +1,5 @@
 project(
-  'remind-me',
+  'cue',
   'rust',
   version: '0.1.0',
   license: 'GPL-3.0-or-later',
@@ -15,11 +15,11 @@ prefix = get_option('prefix')
 bindir = get_option('bindir')
 datadir = get_option('datadir')
 localedir = get_option('localedir')
-app_id = 'io.github.wuzi.RemindMe'
+app_id = 'io.github.wuzi.Cue'
 
 custom_target(
-  'remind-me-binary',
-  output: 'remind-me',
+  'cue-binary',
+  output: 'cue',
   build_always_stale: true,
   command: [
     shell,

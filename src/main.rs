@@ -1,3 +1,3 @@
 fn main() -> glib::ExitCode {
-    remind_me::app::run()
+    cue::app::run()
 }

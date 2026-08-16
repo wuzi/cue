@@ -15,8 +15,8 @@ fn main() {
 
     glib_build_tools::compile_resources(
         &[output_directory.as_path(), PathBuf::from("data").as_path()],
-        "data/io.github.wuzi.RemindMe.gresource.xml",
-        "remind-me.gresource",
+        "data/io.github.wuzi.Cue.gresource.xml",
+        "cue.gresource",
     );
 
     println!("cargo:rerun-if-changed=data/ui/main-window.blp");

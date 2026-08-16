@@ -5,7 +5,7 @@ use std::{
 
 use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use chrono_tz::America::New_York;
-use remind_me::{
+use cue::{
     canvas::format_schedule_suffix,
     model::{CanvasSchedule, NewReminder, Reminder},
     repository::{ReminderRepository, SqliteReminderRepository},
@@ -216,8 +216,8 @@ fn relative_creation_rejects_non_positive_delays_without_persisting() {
 
         assert!(matches!(
             error,
-            remind_me::service::ServiceError::InvalidReminder(
-                remind_me::model::ReminderError::DueTimeNotFuture
+            cue::service::ServiceError::InvalidReminder(
+                cue::model::ReminderError::DueTimeNotFuture
             )
         ));
         assert!(repository.list_active().unwrap().is_empty());
@@ -281,7 +281,7 @@ fn scheduled_creation_rejects_resolution_errors_without_persisting() {
 
     assert!(matches!(
         error,
-        remind_me::service::ServiceError::InvalidSchedule(ScheduleError::DueTimeNotFuture)
+        cue::service::ServiceError::InvalidSchedule(ScheduleError::DueTimeNotFuture)
     ));
     assert!(repository.list_active().unwrap().is_empty());
     assert_eq!(clock.reads(), 1);

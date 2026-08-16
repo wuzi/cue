@@ -1,6 +1,6 @@
 use chrono::{Duration, NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use chrono_tz::America::New_York;
-use remind_me::schedule::{
+use cue::schedule::{
     DaySpec, ScheduleError, ScheduleExpression, ScheduleParseStatus, parse_english,
     resolve_schedule,
 };
@@ -237,11 +237,11 @@ fn parser_distinguishes_default_partial_and_invalid_input_without_guessing() {
     ));
     assert!(matches!(
         parse_english("Call Ada @February 30 9am").status,
-        ScheduleParseStatus::Invalid(remind_me::schedule::ScheduleParseError::InvalidDate)
+        ScheduleParseStatus::Invalid(cue::schedule::ScheduleParseError::InvalidDate)
     ));
     assert!(matches!(
         parse_english("Call Ada @February 30").status,
-        ScheduleParseStatus::Invalid(remind_me::schedule::ScheduleParseError::InvalidDate)
+        ScheduleParseStatus::Invalid(cue::schedule::ScheduleParseError::InvalidDate)
     ));
 }
 

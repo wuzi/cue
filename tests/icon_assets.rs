@@ -6,7 +6,7 @@ const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 fn packaged_application_icons_are_rgba_pngs_at_each_declared_size() {
     for size in [128_u32, 256, 512] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-            "data/icons/hicolor/{size}x{size}/apps/io.github.wuzi.RemindMe.png"
+            "data/icons/hicolor/{size}x{size}/apps/io.github.wuzi.Cue.png"
         ));
         let bytes = fs::read(&path)
             .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));

@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.wuzi.RemindMe</id>
+  <id>io.github.wuzi.Cue</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <name>Remind Me</name>
+  <name>Cue</name>
   <summary>Write notes and turn them into timely reminders</summary>
   <description>
     <p>
-      Remind Me is a focused scratchpad for quick notes and one-time reminders.
+      Cue is a focused scratchpad for quick notes and one-time reminders.
       Write directly on the canvas, then add an English schedule such as
       “@tomorrow 9am” when a note should notify you.
     </p>
@@ -22,9 +22,9 @@
   </developer>
   <url type="homepage">https://github.com/wuzi/remind-me</url>
   <url type="bugtracker">https://github.com/wuzi/remind-me/issues</url>
-  <launchable type="desktop-id">io.github.wuzi.RemindMe.desktop</launchable>
+  <launchable type="desktop-id">io.github.wuzi.Cue.desktop</launchable>
   <provides>
-    <binary>remind-me</binary>
+    <binary>cue</binary>
   </provides>
   <categories>
     <category>Utility</category>

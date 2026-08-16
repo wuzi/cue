@@ -1,6 +1,6 @@
 use chrono::{NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
-use remind_me::time_utils::{
+use cue::time_utils::{
     ClockFormat, LocalTimeError, default_due_time, format_clock_time, resolve_local_datetime,
 };
 

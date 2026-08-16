@@ -28,7 +28,7 @@ pub struct WindowWidgets {
 pub fn build_window(application: &adw::Application) -> Result<WindowWidgets, UiBuildError> {
     let builder = gtk::Builder::new();
     builder.set_translation_domain(Some(GETTEXT_PACKAGE));
-    builder.add_from_resource("/io/github/wuzi/RemindMe/main-window.ui")?;
+    builder.add_from_resource("/io/github/wuzi/Cue/main-window.ui")?;
     let window = object::<adw::ApplicationWindow>(&builder, "main_window")?;
     window.set_application(Some(application));
 

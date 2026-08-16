@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use remind_me::model::{NewReminder, Reminder, ReminderError};
+use cue::model::{NewReminder, Reminder, ReminderError};
 
 fn at(timestamp: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(timestamp, 0).single().unwrap()

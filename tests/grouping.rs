@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use chrono_tz::America::Sao_Paulo;
-use remind_me::{
+use cue::{
     grouping::{ReminderGroup, group_active_reminders},
     model::{NewReminder, Reminder},
 };

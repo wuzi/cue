@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Remind Me
+Name=Cue
 Comment=Write notes and turn them into reminders
-Exec=remind-me
-Icon=io.github.wuzi.RemindMe
+Exec=cue
+Icon=io.github.wuzi.Cue
 Terminal=false
 Type=Application
 Categories=Utility;GTK;
@@ -10,4 +10,4 @@ Keywords=Reminder;Alarm;Note;Scratchpad;Notification;
 DBusActivatable=true
 StartupNotify=true
 X-GNOME-UsesNotifications=true
-X-GNOME-Gettext-Domain=remind-me
+X-GNOME-Gettext-Domain=cue

@@ -3,7 +3,7 @@ use std::{cell::Cell, ops::Deref};
 
 use adw::prelude::*;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
-use remind_me::{
+use cue::{
     model::{CanvasEntry, DeletedCanvasItem, Reminder},
     repository::{ReminderRepository, RepositoryError, SqliteReminderRepository},
     resources,
@@ -160,12 +160,12 @@ fn gtk_smoke_covers_canvas_entries_and_secondary_navigation() {
     adw::init().unwrap();
     resources::register().unwrap();
     let application = adw::Application::builder()
-        .application_id("io.github.wuzi.RemindMe.Test")
+        .application_id("io.github.wuzi.Cue.Test")
         .build();
     application.register(None::<&gio::Cancellable>).unwrap();
 
     let widgets = ui::build_window(&application).unwrap();
-    assert_eq!(widgets.window.title().as_deref(), Some("Remind Me"));
+    assert_eq!(widgets.window.title().as_deref(), Some("Cue"));
     assert_eq!(widgets.window.default_width(), 560);
     assert_eq!(widgets.window.default_height(), 540);
     assert_eq!(widgets.window.width_request(), 360);

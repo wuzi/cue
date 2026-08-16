@@ -1,12 +1,12 @@
 {
-  "app-id": "io.github.wuzi.RemindMe",
+  "app-id": "io.github.wuzi.Cue",
   "runtime": "org.gnome.Platform",
   "runtime-version": "50",
   "sdk": "org.gnome.Sdk",
   "sdk-extensions": [
     "org.freedesktop.Sdk.Extension.rust-stable"
   ],
-  "command": "remind-me",
+  "command": "cue",
   "finish-args": [
     "--share=ipc",
     "--socket=wayland",
@@ -15,7 +15,7 @@
   ],
   "modules": [
     {
-      "name": "remind-me",
+      "name": "cue",
       "buildsystem": "meson",
       "build-options": {
         "append-path": "/usr/lib/sdk/rust-stable/bin",
