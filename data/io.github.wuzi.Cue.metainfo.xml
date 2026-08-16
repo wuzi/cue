@@ -20,8 +20,14 @@
   <developer id="io.github.wuzi">
     <name>wuzi</name>
   </developer>
-  <url type="homepage">https://github.com/wuzi/remind-me</url>
-  <url type="bugtracker">https://github.com/wuzi/remind-me/issues</url>
+  <url type="homepage">https://github.com/wuzi/cue</url>
+  <url type="bugtracker">https://github.com/wuzi/cue/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image type="source" width="610" height="590">https://raw.githubusercontent.com/wuzi/cue/v0.1.0/data/screenshots/cue.png</image>
+      <caption>Write notes and schedule reminders on the same canvas</caption>
+    </screenshot>
+  </screenshots>
   <launchable type="desktop-id">io.github.wuzi.Cue.desktop</launchable>
   <provides>
     <binary>cue</binary>

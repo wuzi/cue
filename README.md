@@ -19,6 +19,20 @@ when a note should become a desktop reminder.
 Everything stays local. Cue is built natively with Rust, GTK4, and libadwaita,
 and follows your GNOME light, dark, accent, and high-contrast preferences.
 
+## Install
+
+Cue 0.1.0 is available as a standalone Flatpak bundle for `x86_64` systems.
+Download `Cue-0.1.0-x86_64.flatpak` from the
+[latest GitHub release](https://github.com/wuzi/cue/releases/latest), then run:
+
+```sh
+flatpak install --user ./Cue-0.1.0-x86_64.flatpak
+flatpak run io.github.wuzi.Cue
+```
+
+The release also includes a SHA-256 checksum file. This standalone bundle does
+not configure automatic updates; download and install future releases manually.
+
 ## Why Cue?
 
 - **Start typing:** The whole window is your canvas. No titles, folders, or save
