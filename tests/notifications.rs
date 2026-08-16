@@ -26,6 +26,7 @@ fn notification_spec_keeps_all_actions_available_outside_the_window() {
 
     assert_eq!(spec.title, "Reminder");
     assert_eq!(spec.body, "Call Ada");
+    assert_eq!(spec.priority, gio::NotificationPriority::High);
     assert_eq!(spec.default_action, "app.show-reminder");
     assert_eq!(spec.target, reminder.id.to_string());
     assert_eq!(

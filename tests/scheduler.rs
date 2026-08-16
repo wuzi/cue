@@ -5,13 +5,14 @@ use std::{
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use cue::{
-    model::{NewReminder, Reminder},
-    repository::{ReminderRepository, SqliteReminderRepository},
+    model::{CanvasEntry, DeletedCanvasItem, NewReminder, Reminder},
+    repository::{ReminderRepository, RepositoryError, SqliteReminderRepository},
     scheduler::{
-        Clock, NotificationError, ReminderNotifier, Scheduler, refresh_wakeup_delay,
-        stable_notification_id, wakeup_delay,
+        Clock, NotificationError, ReminderNotifier, Scheduler, SchedulerError,
+        refresh_wakeup_delay, stable_notification_id, wakeup_delay,
     },
 };
+use uuid::Uuid;
 
 fn at(timestamp: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(timestamp, 0).single().unwrap()
@@ -35,6 +36,7 @@ impl Clock for FakeClock {
 struct RecordingNotifier {
     sent: RefCell<Vec<(String, Reminder)>>,
     fail: Cell<bool>,
+    sounds: Cell<usize>,
 }
 
 impl ReminderNotifier for RecordingNotifier {
@@ -51,6 +53,113 @@ impl ReminderNotifier for RecordingNotifier {
     }
 
     fn withdraw(&self, _id: &str) {}
+
+    fn play_delivery_sound(&self) {
+        self.sounds.set(self.sounds.get() + 1);
+    }
+}
+
+struct FailingFinalListRepository {
+    inner: SqliteReminderRepository,
+    active_list_calls: Cell<usize>,
+}
+
+impl FailingFinalListRepository {
+    fn in_memory() -> Self {
+        Self {
+            inner: SqliteReminderRepository::in_memory().unwrap(),
+            active_list_calls: Cell::new(0),
+        }
+    }
+}
+
+macro_rules! delegate_repository_method {
+    ($name:ident($($argument:ident: $type:ty),* $(,)?) -> $output:ty) => {
+        fn $name(&self, $($argument: $type),*) -> Result<$output, RepositoryError> {
+            self.inner.$name($($argument),*)
+        }
+    };
+}
+
+impl ReminderRepository for FailingFinalListRepository {
+    delegate_repository_method!(insert(reminder: &Reminder) -> ());
+    delegate_repository_method!(restore(reminder: &Reminder) -> ());
+    delegate_repository_method!(get(id: Uuid) -> Reminder);
+
+    fn list_active(&self) -> Result<Vec<Reminder>, RepositoryError> {
+        let call = self.active_list_calls.get() + 1;
+        self.active_list_calls.set(call);
+        if call == 2 {
+            return Err(RepositoryError::Database(
+                rusqlite::Error::ExecuteReturnedResults,
+            ));
+        }
+        self.inner.list_active()
+    }
+
+    delegate_repository_method!(list_history() -> Vec<Reminder>);
+    delegate_repository_method!(edit(
+        id: Uuid,
+        message: &str,
+        due_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Reminder);
+    delegate_repository_method!(mark_notified(id: Uuid, now: DateTime<Utc>) -> Reminder);
+    delegate_repository_method!(snooze(id: Uuid, now: DateTime<Utc>) -> Reminder);
+    delegate_repository_method!(snooze_canvas_reminder(
+        id: Uuid,
+        now: DateTime<Utc>,
+        working_text: Option<(Uuid, &str)>,
+    ) -> Reminder);
+    delegate_repository_method!(complete(id: Uuid, now: DateTime<Utc>) -> Reminder);
+    delegate_repository_method!(delete(id: Uuid) -> Reminder);
+    delegate_repository_method!(clear_history() -> usize);
+    delegate_repository_method!(list_canvas_entries() -> Vec<CanvasEntry>);
+    delegate_repository_method!(append_canvas_entry(
+        message: &str,
+        reminder: Option<&Reminder>,
+        now: DateTime<Utc>,
+    ) -> CanvasEntry);
+    delegate_repository_method!(save_canvas_working_text(
+        id: Uuid,
+        text: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> ());
+    delegate_repository_method!(load_canvas_draft() -> String);
+    delegate_repository_method!(save_canvas_draft(text: &str) -> ());
+    delegate_repository_method!(get_canvas_entry(id: Uuid) -> CanvasEntry);
+    delegate_repository_method!(attach_canvas_reminder(
+        entry_id: Uuid,
+        reminder: &Reminder,
+        now: DateTime<Utc>,
+    ) -> CanvasEntry);
+    delegate_repository_method!(detach_canvas_reminder(
+        entry_id: Uuid,
+        message: &str,
+        now: DateTime<Utc>,
+    ) -> (CanvasEntry, Reminder));
+    delegate_repository_method!(complete_canvas_reminder(
+        reminder_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Reminder);
+    delegate_repository_method!(delete_canvas_entry(id: Uuid) -> DeletedCanvasItem);
+    delegate_repository_method!(restore_canvas_item(item: &DeletedCanvasItem) -> ());
+    delegate_repository_method!(update_canvas_note(
+        entry_id: Uuid,
+        message: &str,
+        now: DateTime<Utc>,
+    ) -> CanvasEntry);
+    delegate_repository_method!(rename_canvas_reminder(
+        entry_id: Uuid,
+        message: &str,
+        now: DateTime<Utc>,
+    ) -> (CanvasEntry, Reminder));
+    delegate_repository_method!(reschedule_canvas_reminder(
+        entry_id: Uuid,
+        message: &str,
+        due_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> (CanvasEntry, Reminder));
 }
 
 fn create_scheduler(
@@ -87,6 +196,31 @@ fn overdue_reminder_is_dispatched_once_and_marked_notified() {
     assert!(second.delivered.is_empty());
     assert_eq!(notifier.sent.borrow().len(), 1);
     assert!(repository.get(item.id).unwrap().notified_at.is_some());
+}
+
+#[test]
+fn multiple_due_reminders_share_one_delivery_sound() {
+    let now = at(1_800_000_000);
+    let (repository, clock, notifier, scheduler) = create_scheduler(now);
+    let first = Reminder::create(
+        NewReminder::new("Call Ada", now + Duration::minutes(1)),
+        now,
+    )
+    .unwrap();
+    let second = Reminder::create(
+        NewReminder::new("Send the report", now + Duration::minutes(2)),
+        now,
+    )
+    .unwrap();
+    repository.insert(&first).unwrap();
+    repository.insert(&second).unwrap();
+    clock.set(now + Duration::minutes(3));
+
+    let result = scheduler.refresh().unwrap();
+
+    assert_eq!(result.delivered, vec![first.id, second.id]);
+    assert_eq!(notifier.sent.borrow().len(), 2);
+    assert_eq!(notifier.sounds.get(), 1);
 }
 
 #[test]
@@ -130,9 +264,33 @@ fn failed_notification_is_left_unnotified_for_a_later_retry() {
 
     assert!(scheduler.refresh().is_err());
     assert_eq!(repository.get(item.id).unwrap().notified_at, None);
+    assert_eq!(notifier.sounds.get(), 0);
 
     notifier.fail.set(false);
     assert_eq!(scheduler.refresh().unwrap().delivered, vec![item.id]);
+    assert_eq!(notifier.sounds.get(), 1);
+}
+
+#[test]
+fn failed_final_schedule_read_does_not_play_delivery_sound() {
+    let now = at(1_800_000_000);
+    let repository = Rc::new(FailingFinalListRepository::in_memory());
+    let clock = Rc::new(FakeClock(Cell::new(now)));
+    let notifier = Rc::new(RecordingNotifier::default());
+    let scheduler = Scheduler::new(repository.clone(), clock.clone(), notifier.clone());
+    let item = Reminder::create(
+        NewReminder::new("Call Ada", now + Duration::minutes(1)),
+        now,
+    )
+    .unwrap();
+    repository.insert(&item).unwrap();
+    clock.set(now + Duration::minutes(2));
+
+    let result = scheduler.refresh();
+
+    assert!(matches!(result, Err(SchedulerError::Repository(_))));
+    assert_eq!(notifier.sent.borrow().len(), 1);
+    assert_eq!(notifier.sounds.get(), 0);
 }
 
 #[test]
@@ -153,6 +311,7 @@ fn completed_reminders_are_not_scheduled() {
     scheduler.refresh().unwrap();
 
     assert!(notifier.sent.borrow().is_empty());
+    assert_eq!(notifier.sounds.get(), 0);
     assert_eq!(scheduler.next_due().unwrap(), None);
 }
 

@@ -28,6 +28,8 @@ pub trait ReminderNotifier {
 
     fn send(&self, id: &str, reminder: &Reminder) -> Result<(), NotificationError>;
     fn withdraw(&self, id: &str);
+
+    fn play_delivery_sound(&self) {}
 }
 
 pub struct Scheduler {
@@ -66,10 +68,15 @@ impl Scheduler {
             self.repository.mark_notified(reminder.id, now)?;
             delivered.push(reminder.id);
         }
+        let next_due = self.next_due()?;
+
+        if !delivered.is_empty() {
+            self.notifier.play_delivery_sound();
+        }
 
         Ok(RefreshResult {
             delivered,
-            next_due: self.next_due()?,
+            next_due,
         })
     }
 
